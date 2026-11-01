@@ -1,0 +1,7 @@
+# Store these files byte-for-byte, with no line-ending conversion.
+#
+# The app updates itself by comparing each local file's git blob hash against
+# the one GitHub reports (see updater.js). If git rewrote line endings on
+# checkout, every local file would hash differently from the copy in the repo
+# and the updater would re-download all of them on every launch, forever.
+* -text

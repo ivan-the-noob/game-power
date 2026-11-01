@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Game Power</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="logo-mark" aria-hidden="true"></span> GAME POWER</div>
+    <div class="top-actions">
+      <button id="checkUpdateBtn" title="Pull the newest code from GitHub">Check for updates</button>
+      <button id="stageBtn" title="Show every instance as a live tile inside one window">▦ Dashboard</button>
+      <button id="tileBtn" title="Lay every running window out in a grid">Tile grid</button>
+      <button id="stopAllBtn" class="danger">Stop all</button>
+      <button id="startAllBtn" class="primary">▶ Start all</button>
+    </div>
+  </header>
+
+  <div id="updateBar" class="update-bar hidden">
+    <span id="updateText"></span>
+    <button id="updateRestart" class="primary tiny">Restart now</button>
+    <button id="updateDismiss" class="tiny">Later</button>
+  </div>
+
+  <main>
+    <section class="stats">
+      <div class="stat"><span class="stat-label">Running</span><span class="stat-value" id="stRunning">0</span><span class="stat-unit" id="stRunningSub">of 1 instance</span></div>
+      <div class="stat"><span class="stat-label">Instances</span><span class="stat-value" id="stInst">0</span><span class="stat-unit">MB</span></div>
+      <div class="stat"><span class="stat-label">Shared</span><span class="stat-value" id="stShared">0</span><span class="stat-unit">MB (GPU + network)</span></div>
+      <div class="stat total"><span class="stat-label">Total</span><span class="stat-value" id="stTotal">0</span><span class="stat-unit">MB</span></div>
+      <div class="stat"><span class="stat-label">Each</span><span class="stat-value" id="stEach">0</span><span class="stat-unit">MB average</span></div>
+    </section>
+
+    <section class="card origin">
+      <div class="card-head">
+        <h2>1 · The original</h2>
+        <span class="hint" id="originNote">—</span>
+      </div>
+      <p class="hint">Set this one up by hand: start it, log in, and download the game's asset packs. Everything you do here is what the clones inherit, so get it right once.</p>
+      <div class="row">
+        <button id="startOriginalBtn" class="primary">▶ Start the original</button>
+        <button id="resetOriginalBtn" class="danger" title="Wipe the original back to empty">Reset</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>2 · Clone it</h2>
+        <span class="hint" id="diskNote">—</span>
+      </div>
+      <p class="hint">Each clone is a new instance that starts with the original's downloaded data already in place, so the packs are fetched once instead of once per instance. The original closes while it is copied.</p>
+      <div class="grid2">
+        <label>How many clones to make now
+          <input type="number" id="cloneCount" min="1" max="30" value="1" />
+        </label>
+        <label>Copy from
+          <select id="cloneFrom"></select>
+        </label>
+      </div>
+      <div class="row">
+        <button id="cloneBtn" class="primary">+ Create clone</button>
+        <span id="cloneMsg" class="msg"></span>
+      </div>
+      <div class="bar clone-bar hidden" id="cloneBarWrap"><i id="cloneBar" style="width:0%"></i></div>
+      <p class="hint warn-note">A clone carries the original's login too, so log out and into the next account inside each copy. Each one is a full copy on disk: the same pack set across ten clones needs ten times the space.</p>
+    </section>
+
+    <section class="card">
+      <h2>Settings</h2>
+      <div class="grid2">
+        <label>Game address
+          <input type="text" id="cfgUrl" placeholder="https://web.qqirose.com/" />
+        </label>
+        <label>Frame rate cap
+          <span class="range-row"><input type="range" id="cfgFps" min="0" max="60" step="5" /><output id="cfgFpsOut"></output></span>
+        </label>
+        <label>Render scale
+          <span class="range-row"><input type="range" id="cfgDpr" min="0" max="100" step="5" /><output id="cfgDprOut"></output></span>
+        </label>
+        <label>Repeat the recording
+          <span class="range-row"><input type="number" id="cfgLoops" min="0" max="99999" step="1" /><span class="unit-lbl">times (0 = until you stop it)</span></span>
+        </label>
+        <label>Wait before the next loop
+          <span class="range-row"><input type="number" id="cfgLoopGapMin" min="0" max="600" step="1" /><span class="unit-lbl">min</span><input type="number" id="cfgLoopGap" min="0" max="600" step="0.1" /><span class="unit-lbl">sec</span></span>
+        </label>
+        <label>Playback speed
+          <span class="range-row"><input type="number" id="cfgSpeed" min="0.1" max="10" step="0.1" /><span class="unit-lbl">× the pace you recorded at</span></span>
+        </label>
+        <label>Or ignore that pace and click every
+          <span class="range-row"><input type="number" id="cfgFixedGap" min="0" max="600" step="0.1" /><span class="unit-lbl">seconds (0 = keep my pace)</span></span>
+        </label>
+        <label class="check"><input type="checkbox" id="cfgPhone" /> Phone mode — mobile browser identity and portrait windows, so the game serves its lighter layout</label>
+        <label class="check"><input type="checkbox" id="cfgMuted" /> Mute every instance</label>
+      </div>
+      <p class="hint">Frame rate and render scale are the two settings an emulator calls Frame Rate and Resolution, applied to the game itself. Lower is cheaper and softer-looking. They take effect on instances started after you save.</p>
+      <div class="row">
+        <button id="applyBtn">Save settings</button>
+        <span id="cfgMsg" class="msg"></span>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>Updates</h2>
+        <span class="hint" id="updStatus">—</span>
+      </div>
+      <p class="hint">The app pulls its own code from GitHub every time it starts, so reopening it is all it takes to be current. A private repo needs a read-only token: GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens → only this repository, Contents: Read-only. The token is stored on this machine only and is never committed.</p>
+      <div class="grid2">
+        <label>Repository
+          <input type="text" id="updRepo" placeholder="owner/name" />
+        </label>
+        <label>Branch
+          <input type="text" id="updBranch" placeholder="main" />
+        </label>
+        <label class="wide">Read-only token (leave empty if the repo is public)
+          <input type="password" id="updToken" placeholder="github_pat_…" />
+        </label>
+        <label class="check"><input type="checkbox" id="updEnabled" /> Check for new code on every launch</label>
+      </div>
+      <div class="row">
+        <button id="updSaveBtn">Save and check now</button>
+        <span id="updMsg" class="msg"></span>
+      </div>
+    </section>
+
+    <section class="card grow">
+      <div class="card-head">
+        <h2>Instances</h2>
+        <span class="hint" id="monitorNote">Nothing running.</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>#</th><th>Name</th><th>Status</th><th>RAM</th><th>CPU</th><th>Up</th><th>Low graphics</th><th></th></tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <span id="footVersion"></span>
+    <span class="foot-note">Every instance keeps its own login and asset cache, and they all share one GPU and one network process — which is why the total sits far below what the same number of emulators would cost.</span>
+  </footer>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
