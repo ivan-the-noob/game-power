@@ -1,6 +1,6 @@
 {
   "name": "game-power",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "Many instances of a web game on screen at once, tiled, with live RAM per instance — the multi-instance grid an Android emulator gives you, without the Android.",
   "main": "main.js",
   "scripts": {

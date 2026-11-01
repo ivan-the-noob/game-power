@@ -54,32 +54,95 @@
     } catch (e) { /* no host listening — run at native speed */ }
   }
 
-  if (dpr > 0) {
+  // Both overrides have to live in the PAGE's own world, because it is the
+  // page's requestAnimationFrame and devicePixelRatio the game reads. A
+  // preload cannot touch those directly unless context isolation is off, and
+  // a <webview> tile keeps it on no matter what the attribute asks for —
+  // which is why the frame-rate cap silently did nothing in the dashboard.
+  //
+  // A <script> element added to the document always runs in the page's world,
+  // isolated preload or not. So the override goes in as source text, at
+  // document-start, before the game's own scripts get a chance to read either
+  // value.
+  function runInPage(source) {
     try {
-      Object.defineProperty(window, 'devicePixelRatio', { configurable: true, get: () => dpr });
-    } catch (e) { /* game just renders at native scale */ }
+      const el = document.createElement('script');
+      el.textContent = source;
+      (document.documentElement || document.head || document.body).appendChild(el);
+      el.remove();
+      return true;
+    } catch (e) { return false; }
   }
 
-  if (fps > 0) {
-    try {
-      const raf = window.requestAnimationFrame.bind(window);
-      const minGap = 1000 / fps;
-      let last = -Infinity;
-      window.requestAnimationFrame = function (cb) {
-        return raf(function (t) {
-          // Too soon: re-queue without calling the game back, so the frame is
-          // dropped before it draws anything.
-          if (t - last < minGap) { window.requestAnimationFrame(cb); return; }
-          last = t;
-          cb(t);
-        });
-      };
-    } catch (e) { /* ignore */ }
+  if (fps > 0 || dpr > 0) {
+    runInPage(`(function () {
+      var fps = ${Number(fps) || 0};
+      var dpr = ${Number(dpr) || 0};
+      if (dpr > 0) {
+        try { Object.defineProperty(window, 'devicePixelRatio', { configurable: true, get: function () { return dpr; } }); } catch (e) {}
+      }
+      if (fps > 0) {
+        try {
+          var raf = window.requestAnimationFrame.bind(window);
+          var minGap = 1000 / fps;
+          var last = -Infinity;
+          window.requestAnimationFrame = function (cb) {
+            return raf(function (t) {
+              // Too soon: re-queue without calling the game back, so the frame
+              // is dropped before it draws anything.
+              if (t - last < minGap) { window.requestAnimationFrame(cb); return; }
+              last = t;
+              cb(t);
+            });
+          };
+        } catch (e) {}
+      }
+      try { window.__rcaGameTuned = { fps: fps, dpr: dpr, at: Date.now() }; } catch (e) {}
+    })();`);
+  } else {
+    runInPage("try { window.__rcaGameTuned = { fps: 0, dpr: 0, at: Date.now() }; } catch (e) {}");
   }
 
-  // Read back by the app to show whether low-graphics mode actually took
-  // effect on this instance, instead of just claiming it did.
-  try { window.__rcaGameTuned = { fps: fps || 0, dpr: dpr || 0, at: Date.now() }; } catch (e) { /* ignore */ }
+  /* ======================================================================
+   * Health heartbeat
+   *
+   * Counts the frames this instance actually paints and reports the rate once
+   * a second. Both the counter and the report run on the page's own main
+   * thread, so if the game seizes up the beat stops arriving — which is the
+   * signal the dashboard needs to flag a frozen tile, and it cannot be faked
+   * by a tab that is merely busy elsewhere.
+   * ==================================================================== */
+  (function health() {
+    let frames = 0;
+    let since = Date.now();
+    const tick = () => {
+      frames += 1;
+      try { window.requestAnimationFrame(tick); } catch (e) { /* page gone */ }
+    };
+    try { window.requestAnimationFrame(tick); } catch (e) { /* ignore */ }
+    // The login screen puts a real password field in the page; in game there
+    // is none. So a password box that is actually on screen means this
+    // instance has dropped back to the login — which is what "disconnected"
+    // looks like from out here, whether the tile is being watched or not.
+    const atLogin = () => {
+      try {
+        const p = document.querySelector('input[type="password"]');
+        if (!p) return false;
+        const r = p.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      } catch (e) { return false; }
+    };
+
+    setInterval(() => {
+      const now = Date.now();
+      const secs = Math.max(0.001, (now - since) / 1000);
+      const beat = { fps: Math.round(frames / secs), at: now, atLogin: atLogin() };
+      frames = 0;
+      since = now;
+      try { if (ipc && ipc.sendToHost) ipc.sendToHost('rca-game:health', beat); } catch (e) { /* not a tile */ }
+      try { if (ipc) ipc.send('rca-game:health', beat); } catch (e) { /* not a window */ }
+    }, 1000);
+  })();
 
   /* ======================================================================
    * Click recorder
@@ -249,6 +312,19 @@
           case 'stop': stopPlaying(); report(); break;
           case 'clear': stopPlaying(); stopRecording(); steps = []; saveSteps(); report(); break;
           case 'state': report(); break;
+          // Hand this instance's routine out, so one recording can be copied
+          // to every other instance instead of being made again in each.
+          case 'exportSteps':
+            try { if (ipc.sendToHost) ipc.sendToHost('rca-game:steps', { steps }); } catch (e) { /* not a tile */ }
+            try { ipc.send('rca-game:steps', { steps }); } catch (e) { /* not a window */ }
+            break;
+          case 'importSteps':
+            stopPlaying();
+            stopRecording();
+            steps = Array.isArray(m.steps) ? m.steps.slice(0, MAX_STEPS) : [];
+            saveSteps();
+            report();
+            break;
           default: break;
         }
       });

@@ -18,6 +18,13 @@ contextBridge.exposeInMainWorld('api', {
   clickCmd: (id, cmd) => ipcRenderer.invoke('game:click', id, cmd),
   onClickState: (cb) => ipcRenderer.on('click:state', (_e, s) => cb(s)),
 
+  groupList: () => ipcRenderer.invoke('group:list'),
+  groupCreate: (name) => ipcRenderer.invoke('group:create', name),
+  groupDelete: (name) => ipcRenderer.invoke('group:delete', name),
+  groupSet: (ids, name) => ipcRenderer.invoke('group:set', ids, name),
+  credGet: (id) => ipcRenderer.invoke('cred:get', id),
+  credSet: (id, cred) => ipcRenderer.invoke('cred:set', id, cred),
+
   clone: (from, count) => ipcRenderer.invoke('game:clone', from, count),
   remove: (id) => ipcRenderer.invoke('game:remove', id),
   reset: (id) => ipcRenderer.invoke('game:reset', id),

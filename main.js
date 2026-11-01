@@ -128,6 +128,14 @@ ipcMain.on('rca-game:clickState', (e, state) => {
 
 ipcMain.handle('game:click', sync((_e, id, cmd) => instances.sendClick(id, { cmd })));
 
+/* ---- groups + saved credentials -------------------------------------------- */
+ipcMain.handle('group:list', sync(() => ({ ok: true, groups: instances.listGroups() })));
+ipcMain.handle('group:create', sync((_e, name) => instances.createGroup(name)));
+ipcMain.handle('group:delete', sync((_e, name) => instances.deleteGroup(name)));
+ipcMain.handle('group:set', sync((_e, ids, name) => instances.setGroup(ids, name)));
+ipcMain.handle('cred:get', sync((_e, id) => instances.getCred(id)));
+ipcMain.handle('cred:set', sync((_e, id, cred) => instances.setCred(id, cred)));
+
 ipcMain.handle('game:clone', asyncOk((_e, from, count) => instances.clone(from, count)));
 ipcMain.handle('game:remove', asyncOk((_e, id) => instances.remove(id)));
 ipcMain.handle('game:reset', asyncOk((_e, id) => instances.reset(id)));

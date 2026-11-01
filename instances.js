@@ -61,6 +61,9 @@ function loadState() {
   const legacy = (!raw.settings && raw.url) ? { url: raw.url, phoneMode: raw.phoneMode, fps: raw.fps, dpr: raw.dpr, muted: raw.muted } : null;
   state = {
     settings: { ...DEFAULTS, ...(raw.settings || legacy || {}) },
+    // Group names you have made, kept apart from the instances so an empty
+    // group still exists to move things into.
+    groups: Array.isArray(raw.groups) ? raw.groups.filter((g) => typeof g === 'string' && g.trim()) : [],
     list: Array.isArray(raw.list) ? raw.list.filter((i) => i && Number(i.id)) : [],
   };
   if (!state.list.some((i) => Number(i.id) === ORIGINAL_ID)) {
@@ -95,6 +98,78 @@ function saveSettings(patch) {
   persist();
   return next;
 }
+
+/* ---- groups --------------------------------------------------------------
+ * A group is just a label on an instance, plus a list of the labels you have
+ * made so an empty group can still exist to drag things into. Both the
+ * instances table and the dashboard filter on it.
+ * -------------------------------------------------------------------------- */
+function listGroups() {
+  const st = loadState();
+  const named = Array.isArray(st.groups) ? st.groups : [];
+  // Anything an instance claims counts, even if the list lost it somehow.
+  const used = st.list.map((i) => (i.group || '').trim()).filter(Boolean);
+  return [...new Set([...named, ...used])].sort((a, b) => a.localeCompare(b));
+}
+
+function createGroup(name) {
+  const n = String(name || '').trim().slice(0, 40);
+  if (!n) return { ok: false, error: 'Give the group a name.' };
+  const st = loadState();
+  if (!Array.isArray(st.groups)) st.groups = [];
+  if (st.groups.includes(n)) return { ok: false, error: `"${n}" already exists.` };
+  st.groups.push(n);
+  persist();
+  return { ok: true, groups: listGroups() };
+}
+
+function deleteGroup(name) {
+  const n = String(name || '').trim();
+  const st = loadState();
+  st.groups = (Array.isArray(st.groups) ? st.groups : []).filter((g) => g !== n);
+  // The instances survive; they just lose the label.
+  for (const row of st.list) if ((row.group || '') === n) row.group = '';
+  persist();
+  return { ok: true, groups: listGroups() };
+}
+
+function setGroup(ids, name) {
+  const n = String(name || '').trim().slice(0, 40);
+  const want = new Set((Array.isArray(ids) ? ids : [ids]).map(Number).filter(Boolean));
+  const st = loadState();
+  for (const row of st.list) if (want.has(Number(row.id))) row.group = n;
+  if (n && Array.isArray(st.groups) && !st.groups.includes(n)) st.groups.push(n);
+  persist();
+  return { ok: true, groups: listGroups() };
+}
+
+/* ---- credentials ---------------------------------------------------------
+ * Whatever you need to get back into that account, kept beside the instance
+ * it belongs to. Stored in plain text in this app's own data folder, the same
+ * way the browser session beside it already holds a live login — so treat the
+ * folder as the secret, not these fields.
+ * -------------------------------------------------------------------------- */
+function getCred(id) {
+  const row = entry(id);
+  return { ok: true, cred: (row && row.cred) || { user: '', pass: '', pin: '', extra: '', note: '' } };
+}
+
+function setCred(id, cred) {
+  const row = entry(id);
+  if (!row) return { ok: false, error: 'No such instance.' };
+  const c = cred || {};
+  row.cred = {
+    user: String(c.user || '').slice(0, 200),
+    pass: String(c.pass || '').slice(0, 200),
+    pin: String(c.pin || '').slice(0, 64),
+    extra: String(c.extra || '').slice(0, 300),
+    note: String(c.note || '').slice(0, 1000),
+  };
+  persist();
+  return { ok: true };
+}
+
+const hasCred = (row) => !!(row.cred && (row.cred.user || row.cred.pass || row.cred.pin || row.cred.extra || row.cred.note));
 
 function getSettings() { return loadState().settings; }
 function entry(id) { return loadState().list.find((i) => Number(i.id) === Number(id)) || null; }
@@ -179,9 +254,11 @@ function stageData() {
     ok: true,
     settings: s,
     ua: s.phoneMode ? PHONE_UA : '',
+    groups: listGroups(),
     rows: loadState().list.map((row) => ({
       id: row.id,
       name: row.name,
+      group: row.group || '',
       original: Number(row.id) === ORIGINAL_ID,
       partition: prepareSession(row.id),
     })),
@@ -495,6 +572,8 @@ function metrics() {
     return {
       id: row.id,
       name: row.name,
+      group: row.group || '',
+      hasCred: hasCred(row),
       original: Number(row.id) === ORIGINAL_ID,
       from: row.from || null,
       alive,
@@ -543,6 +622,7 @@ function diskUsage() {
 module.exports = {
   GAME_URL, DEFAULTS, ORIGINAL_ID,
   getSettings, saveSettings, applyLive, prepareSession, stageData,
+  listGroups, createGroup, deleteGroup, setGroup, getCred, setCred,
   start, startAll, stop, stopAll, focus, reload, rename, remove, reset, sendClick, recorderCfg, idForWebContents,
   clone, cloneStatus, tile, metrics, diskUsage,
 };

@@ -24,6 +24,40 @@
     <button id="updateDismiss" class="tiny">Later</button>
   </div>
 
+  <!-- Asking for one line of text. Electron does not implement window.prompt,
+       so anything that used it silently did nothing at all. -->
+  <div id="askModal" class="modal hidden">
+    <div class="modal-box" style="width: 420px;">
+      <h2 id="askTitle">…</h2>
+      <label class="wide"><input type="text" id="askInput" autocomplete="off" /></label>
+      <div class="modal-actions">
+        <button id="askCancel">Cancel</button>
+        <button id="askOk" class="primary">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Saved details for one instance -->
+  <div id="credModal" class="modal hidden">
+    <div class="modal-box">
+      <h2 id="credTitle">Details</h2>
+      <p class="hint">Whatever you need to get back into this account. Kept on this machine only, in plain text beside the instance it belongs to — the same folder already holds that account's live browser session, so treat the folder itself as the secret.</p>
+      <div class="grid2">
+        <label>Username <input type="text" id="credUser" autocomplete="off" /></label>
+        <label>Password <input type="password" id="credPass" autocomplete="off" /></label>
+        <label>PIN <input type="password" id="credPin" autocomplete="off" /></label>
+        <label>Anything else <input type="text" id="credExtra" placeholder="e-mail, server, character…" autocomplete="off" /></label>
+        <label class="wide">Notes <textarea id="credNote" rows="3"></textarea></label>
+        <label class="check"><input type="checkbox" id="credShow" /> Show password and PIN</label>
+      </div>
+      <div class="modal-actions">
+        <span id="credMsg" class="msg"></span>
+        <button id="credClose">Close</button>
+        <button id="credSave" class="primary">Save</button>
+      </div>
+    </div>
+  </div>
+
   <main>
     <section class="stats">
       <div class="stat"><span class="stat-label">Running</span><span class="stat-value" id="stRunning">0</span><span class="stat-unit" id="stRunningSub">of 1 instance</span></div>
@@ -130,10 +164,11 @@
         <h2>Instances</h2>
         <span class="hint" id="monitorNote">Nothing running.</span>
       </div>
+      <div class="group-bar" id="groupBar"></div>
       <div class="table-wrap">
         <table>
           <thead>
-            <tr><th>#</th><th>Name</th><th>Status</th><th>RAM</th><th>CPU</th><th>Up</th><th>Low graphics</th><th></th></tr>
+            <tr><th>#</th><th>Name</th><th>Group</th><th>Status</th><th>RAM</th><th>CPU</th><th>Up</th><th></th></tr>
           </thead>
           <tbody id="rows"></tbody>
         </table>

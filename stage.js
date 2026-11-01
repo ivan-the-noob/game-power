@@ -86,6 +86,7 @@
         <span class="tile-name">${esc(row.name)}</span>
         <span class="tile-stat" data-stat>idle</span>
         <span class="tile-btns">
+          <button data-act="hide" title="Hide this view. The instance keeps running — hiding just stops it being drawn, which is what frees the frame rate.">👁</button>
           <button data-act="record" title="Record every click you make in this tile, until you press it again">●</button>
           <button data-act="play" title="Replay the recording on a loop">▶</button>
           <button data-act="expand" title="Fill the window with this one">⤢</button>
@@ -119,6 +120,8 @@
     if (cfg.ua) wv.setAttribute('useragent', cfg.ua);
 
     wv.addEventListener('ipc-message', (ev) => {
+      if (ev.channel === 'rca-game:health') { t.health = ev.args && ev.args[0]; return; }
+      if (ev.channel === 'rca-game:steps') { spreadSteps((ev.args && ev.args[0] && ev.args[0].steps) || []); return; }
       if (ev.channel !== 'rca-game:clickState') return;
       t.rec = ev.args && ev.args[0] ? ev.args[0] : {};
       paintRec(t.row.id);
@@ -137,6 +140,7 @@
     t.body.appendChild(wv);
     t.wv = wv;
     t.el.classList.add('live');
+    if (t.hidden) setHidden(t.row.id, true);
     t.statEl.textContent = 'loading…';
   }
 
@@ -152,6 +156,31 @@
     t.statEl.textContent = 'idle';
     t.body.innerHTML = '<div class="tile-idle"><span>Not loaded</span><button data-act="load" class="primary">▶ Load</button></div>';
     if (expandedId === Number(id)) setExpanded(null);
+  }
+
+  /* ---- hiding ------------------------------------------------------------
+   * A hidden tile is NOT closed: the game keeps running, stays logged in and
+   * keeps replaying its recording. It simply stops being painted, and a view
+   * that is not painted costs nothing to composite — which is the whole
+   * reason a wall of live tiles drags and a single expanded one does not.
+   * ---------------------------------------------------------------------- */
+  function setHidden(id, hidden) {
+    const t = tiles.get(Number(id));
+    if (!t) return;
+    t.hidden = !!hidden;
+    if (t.wv) t.wv.style.display = t.hidden ? 'none' : '';
+    let veil = t.body.querySelector('.tile-veil');
+    if (t.hidden) {
+      if (!veil) {
+        veil = document.createElement('div');
+        veil.className = 'tile-veil';
+        veil.innerHTML = '<span class="veil-eye">👁</span><span>Hidden · still running</span>';
+        t.body.appendChild(veil);
+      }
+    } else if (veil) { veil.remove(); }
+    const btn = t.el.querySelector('button[data-act="hide"]');
+    if (btn) { btn.textContent = t.hidden ? '🚫' : '👁'; btn.style.color = t.hidden ? 'var(--amber)' : ''; }
+    t.el.classList.toggle('is-hidden', t.hidden);
   }
 
   function setExpanded(id) {
@@ -179,7 +208,20 @@
         if (!m) { t.statEl.textContent = '…'; continue; }
         loadedCount += 1;
         totalMB += m.ramMB;
-        t.statEl.textContent = `${m.ramMB} MB · ${m.cpu.toFixed(0)}%`;
+        // Say what the instance is doing in words. A hidden tile is supposed
+        // to stop painting, so it is never called stuck — but it can still
+        // drop back to the login screen, and that is worth knowing even while
+        // you are not looking at it.
+        const h = t.health;
+        const stale = !h || (Date.now() - h.at) > 5000;
+        const gone = !!(h && h.atLogin);
+        let label;
+        if (t.hidden) label = gone ? 'hidden · disconnected' : 'hidden';
+        else if (gone) label = 'disconnected';
+        else if (stale) label = 'no frames';
+        else label = h.fps + ' fps';
+        t.el.classList.toggle('offline', gone || (!t.hidden && stale));
+        t.statEl.textContent = m.ramMB + ' MB · ' + label;
         t.statEl.className = 'tile-stat' + (m.ramMB > 700 ? ' max' : m.ramMB > 400 ? ' hot' : '');
       }
     }
@@ -197,6 +239,7 @@
     const id = Number(tileEl.dataset.id);
     const act = btn.dataset.act;
     if (act === 'load') load(id);
+    else if (act === 'hide') { const t = tiles.get(id); setHidden(id, !(t && t.hidden)); }
     else if (act === 'record') { const t = tiles.get(id); sendClick(id, (t && t.rec && t.rec.recording) ? 'stopRecord' : 'record'); }
     else if (act === 'play') { const t = tiles.get(id); sendClick(id, (t && t.rec && t.rec.playing) ? 'stop' : 'play'); }
     else if (act === 'unload') unload(id);
@@ -248,6 +291,46 @@
   $('clickAllBtn').addEventListener('click', () => { for (const id of tiles.keys()) sendClick(id, 'play'); });
   $('clickStopBtn').addEventListener('click', () => { for (const id of tiles.keys()) sendClick(id, 'stop'); });
 
+  /* ---- one recording, every instance -------------------------------------
+   * Ask the first loaded tile for its routine, then hand that same routine to
+   * every other loaded tile. Record once rather than once per clone.
+   * ---------------------------------------------------------------------- */
+  let copyFrom = null;
+
+  $('copyRecBtn').addEventListener('click', () => {
+    const loaded = [...tiles.values()].filter((t) => t.wv);
+    if (loaded.length < 2) { alert('Load at least two instances first.'); return; }
+    copyFrom = loaded[0];
+    sendClick(copyFrom.row.id, 'exportSteps');
+  });
+
+  function spreadSteps(steps) {
+    if (!copyFrom) return;
+    const src = copyFrom;
+    copyFrom = null;
+    if (!steps || !steps.length) { alert(`#${src.row.id} ${src.row.name} has nothing recorded yet.`); return; }
+    let n = 0;
+    for (const t of tiles.values()) {
+      if (!t.wv || t === src) continue;
+      try { t.wv.send('rca-game:click', { cmd: 'importSteps', steps, cfg: playbackCfg() }); n += 1; } catch (e) { /* ignore */ }
+    }
+    alert(`Copied ${steps.length} clicks from #${src.row.id} ${src.row.name} to ${n} other instance${n === 1 ? '' : 's'}.`);
+  }
+
+  /* ---- group filter ------------------------------------------------------- */
+  function applyGroupFilter() {
+    const want = $('groupSel').value || '';
+    for (const t of tiles.values()) {
+      const show = !want || (t.row.group || '') === want;
+      t.el.style.display = show ? '' : 'none';
+    }
+    applyLayout();
+  }
+  $('groupSel').addEventListener('change', applyGroupFilter);
+
+  $('hideAllTiles').addEventListener('click', () => { for (const id of tiles.keys()) setHidden(id, true); });
+  $('showAllTiles').addEventListener('click', () => { for (const id of tiles.keys()) setHidden(id, false); });
+
   $('startAllTiles').addEventListener('click', () => { for (const id of tiles.keys()) load(id); });
   $('stopAllTiles').addEventListener('click', () => { for (const id of tiles.keys()) unload(id); });
   ['tileW', 'tileH', 'fixedSize'].forEach((id) => $(id).addEventListener('input', applyLayout));
@@ -263,6 +346,10 @@
       grid.innerHTML = '<div class="stage-empty">No instances yet. Create them in the control panel first.</div>';
       return;
     }
+    const groups = Array.isArray(cfg.groups) ? cfg.groups : [];
+    $('groupSel').innerHTML = '<option value="">All</option>'
+      + groups.map((g) => `<option value="${esc(g)}">${esc(g)}</option>`).join('');
+
     const l = readLayout();
     $('tileW').value = l.w;
     $('tileH').value = l.h;

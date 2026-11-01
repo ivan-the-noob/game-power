@@ -58,3 +58,17 @@
 }
 .tile-idle button { padding: 7px 16px; }
 .stage-empty { grid-column: 1 / -1; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 13px; padding: 40px; }
+
+/* A hidden tile keeps running; it just stops being painted. */
+.tile-veil {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 8px;
+  background: var(--row); color: var(--faint); font-size: 12px;
+}
+.veil-eye { font-size: 22px; opacity: .55; }
+.tile.is-hidden { border-color: rgba(245,165,36,.45); }
+
+/* Dropped back to the login screen, or stopped painting. Said in words on
+   the tile's own stat line rather than ringed in red, which got noisy fast
+   with a wall of instances. */
+.tile.offline .tile-stat { color: var(--amber); }

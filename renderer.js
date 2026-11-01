@@ -16,6 +16,8 @@
   let ORIGINAL_ID = 1;
   let rowsCache = [];
   let cloneWasBusy = false;
+  let groupsCache = [];
+  let groupFilter = '';      // '' = All
   // id -> { steps, recording, playing } as reported from inside each instance
   const recState = new Map();
 
@@ -24,6 +26,35 @@
     el.textContent = text || '';
     el.className = 'msg' + (kind ? ' ' + kind : '');
   }
+
+  /* ---- asking for a line of text -----------------------------------------
+   * Electron does not implement window.prompt — it returns nothing and shows
+   * nothing — so every "name this" box has to be a real one.
+   * ---------------------------------------------------------------------- */
+  let askResolve = null;
+
+  function askText(title, value) {
+    return new Promise((resolve) => {
+      askResolve = resolve;
+      $('askTitle').textContent = title;
+      $('askInput').value = value || '';
+      $('askModal').classList.remove('hidden');
+      $('askInput').focus();
+      $('askInput').select();
+    });
+  }
+
+  function closeAsk(value) {
+    $('askModal').classList.add('hidden');
+    if (askResolve) { const r = askResolve; askResolve = null; r(value); }
+  }
+
+  $('askOk').addEventListener('click', () => closeAsk($('askInput').value));
+  $('askCancel').addEventListener('click', () => closeAsk(null));
+  $('askInput').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') closeAsk($('askInput').value);
+    else if (e.key === 'Escape') closeAsk(null);
+  });
 
   /* ---- settings --------------------------------------------------------- */
   function readForm() {
@@ -65,11 +96,64 @@
   /* ---- monitor ---------------------------------------------------------- */
   const ramClass = (mb) => (mb > 700 ? 'max' : mb > 400 ? 'hot' : '');
 
+  /* ---- the table ----------------------------------------------------------
+   * This redraws once a second, and rebuilding the rows wholesale would throw
+   * away whatever you were in the middle of — an open group dropdown closed
+   * itself the moment the mouse moved. So the rebuild only happens when the
+   * rows actually change shape; the rest of the time RAM, CPU and uptime are
+   * written straight into the cells that already exist. And a rebuild never
+   * runs while something in the table has focus: it waits until you are done.
+   * ------------------------------------------------------------------------ */
+  let lastSig = '';
+  let rebuildWanted = false;
+
+  const rowSignature = (rows) => rows.map((r) => {
+    const rec = recState.get(r.id) || {};
+    return [r.id, r.name, r.group || '', r.alive ? 1 : 0, r.hasCred ? 1 : 0,
+      rec.recording ? 1 : 0, rec.playing ? 1 : 0, rec.steps || 0].join('|');
+  }).join(';') + '::' + groupsCache.join(',');
+
+  function updateInPlace(rows, peak) {
+    for (const r of rows) {
+      const tr = $('rows').querySelector(`tr[data-id="${r.id}"]`);
+      if (!tr) continue;
+      const cell = (n) => tr.children[n];
+      if (r.alive) {
+        const bar = cell(4).querySelector('i');
+        cell(4).querySelector('.num').textContent = r.ramMB;
+        if (bar) {
+          bar.className = ramClass(r.ramMB);
+          bar.style.width = Math.min(100, Math.round((r.ramMB / peak) * 100)) + '%';
+        }
+        cell(5).querySelector('.num').textContent = r.cpu.toFixed(1);
+        cell(6).querySelector('.num').textContent = r.upMin;
+      }
+    }
+  }
+
+  // Once you stop interacting with the table, catch up on anything deferred.
+  $('rows').addEventListener('focusout', () => {
+    if (rebuildWanted) { rebuildWanted = false; lastSig = ''; poll(); }
+  });
+
   function renderRows(m) {
     rowsCache = m.rows;
     const body = $('rows');
-    const peak = Math.max(300, ...m.rows.map((r) => r.ramMB));
-    body.innerHTML = m.rows.map((r) => {
+    // "All" shows everything; a chosen group narrows the table to its members.
+    const shown = groupFilter ? m.rows.filter((r) => (r.group || '') === groupFilter) : m.rows;
+    if (!shown.length) {
+      body.innerHTML = `<tr><td colspan="8" class="empty">Nothing in "${esc(groupFilter)}" yet. Pick a group on a row to move it here.</td></tr>`;
+      lastSig = '';
+      return;
+    }
+    const peak = Math.max(300, ...shown.map((r) => r.ramMB));
+    const sig = rowSignature(shown);
+    if (sig === lastSig) { updateInPlace(shown, peak); return; }
+    // Something structural changed — but never yank a control out from under
+    // the mouse. Hold the rebuild until focus leaves the table.
+    if (body.contains(document.activeElement)) { rebuildWanted = true; updateInPlace(shown, peak); return; }
+    lastSig = sig;
+    body.innerHTML = shown.map((r) => {
       const status = r.alive ? '<span class="pill on">Running</span>' : '<span class="pill off">Stopped</span>';
       const ram = r.alive
         ? `<span class="num">${r.ramMB}</span> MB<div class="bar"><i class="${ramClass(r.ramMB)}" style="width:${Math.min(100, Math.round((r.ramMB / peak) * 100))}%"></i></div>`
@@ -103,15 +187,18 @@
         : `<button class="tiny" data-act="start" data-id="${r.id}">Start</button>
            <button class="tiny" data-act="cloneThis" data-id="${r.id}" title="Make a new instance that is a copy of this one">Clone</button>
            ${r.original ? '' : `<button class="tiny" data-act="remove" data-id="${r.id}" title="Delete this clone and its data">Delete</button>`}`;
-      return `<tr>
+      const opts = ['', ...groupsCache].map((g) =>
+        `<option value="${esc(g)}"${(r.group || '') === g ? ' selected' : ''}>${g ? esc(g) : '— none —'}</option>`).join('');
+      const details = `<button class="tiny${r.hasCred ? ' has-cred' : ''}" data-act="cred" data-id="${r.id}" title="${r.hasCred ? 'Saved details for this account' : 'Save the login details for this account'}">${r.hasCred ? '🔑' : '🔑'} Details</button>`;
+      return `<tr data-id="${r.id}">
         <td class="idx num">#${r.id}</td>
         <td class="name" data-act="rename" data-id="${r.id}" title="Double-click to rename">${esc(r.name)}${tag}</td>
+        <td><select class="row-group" data-id="${r.id}" title="Move this instance to a group">${opts}</select></td>
         <td>${status}</td>
         <td>${ram}</td>
         <td>${cpu}</td>
         <td>${up}</td>
-        <td>${gfx}</td>
-        <td class="acts">${acts}</td>
+        <td class="acts">${details}${acts}</td>
       </tr>`;
     }).join('');
   }
@@ -144,6 +231,107 @@
       sel.value = m.rows.some((r) => r.id === keep) ? String(keep) : String(ORIGINAL_ID);
     }
   }
+
+  /* ---- groups ------------------------------------------------------------
+   * A group is a label on an instance. The bar filters the table, and the
+   * dashboard has the same filter, so you can put thirty instances in
+   * "Farming" and only load those.
+   * ---------------------------------------------------------------------- */
+  function renderGroupBar() {
+    const counts = new Map();
+    for (const r of rowsCache) {
+      const g = r.group || '';
+      if (g) counts.set(g, (counts.get(g) || 0) + 1);
+    }
+    const chip = (g, label, n) =>
+      `<button class="group-chip${groupFilter === g ? ' active' : ''}" data-group="${esc(g)}">${esc(label)}${n != null ? ` <span class="chip-n">${n}</span>` : ''}</button>`;
+    $('groupBar').innerHTML =
+      chip('', 'All', rowsCache.length)
+      + groupsCache.map((g) => chip(g, g, counts.get(g) || 0)).join('')
+      + '<button class="group-new" id="newGroupBtn" title="Make a new group">+ Create group</button>'
+      + (groupFilter ? `<button class="group-del" id="delGroupBtn" title="Delete the group ${esc(groupFilter)}. The instances in it are kept.">Delete "${esc(groupFilter)}"</button>` : '');
+  }
+
+  async function loadGroups() {
+    const r = await window.api.groupList().catch(() => null);
+    groupsCache = (r && r.ok) ? r.groups : [];
+    if (groupFilter && !groupsCache.includes(groupFilter)) groupFilter = '';
+    renderGroupBar();
+  }
+
+  $('groupBar').addEventListener('click', async (e) => {
+    const chip = e.target.closest('.group-chip');
+    if (chip) { groupFilter = chip.dataset.group || ''; renderGroupBar(); poll(); return; }
+    if (e.target.closest('#newGroupBtn')) {
+      const name = await askText('Name for the new group', '');
+      if (name == null) return;
+      const r = await window.api.groupCreate(name).catch((err) => ({ ok: false, error: err.message }));
+      if (!r || !r.ok) { msgEl('cfgMsg', (r && r.error) || 'Could not create it.', 'err'); return; }
+      await loadGroups();
+      poll();
+      return;
+    }
+    if (e.target.closest('#delGroupBtn')) {
+      if (!confirm(`Delete the group "${groupFilter}"?\n\nThe instances in it are kept, they just lose the label.`)) return;
+      await window.api.groupDelete(groupFilter).catch(() => {});
+      groupFilter = '';
+      await loadGroups();
+      poll();
+    }
+  });
+
+  // Moving one instance into a group, straight from its row.
+  $('rows').addEventListener('change', async (e) => {
+    const sel = e.target.closest('select.row-group');
+    if (!sel) return;
+    const id = Number(sel.dataset.id);
+    await window.api.groupSet([id], sel.value).catch(() => {});
+    await loadGroups();
+    poll();
+  });
+
+  /* ---- saved details ------------------------------------------------------ */
+  let credForId = null;
+
+  function setCredVisible(on) {
+    $('credPass').type = on ? 'text' : 'password';
+    $('credPin').type = on ? 'text' : 'password';
+  }
+
+  async function openCred(id) {
+    credForId = Number(id);
+    const row = rowsCache.find((r) => r.id === credForId);
+    $('credTitle').textContent = `Details · #${credForId} ${row ? row.name : ''}`;
+    const r = await window.api.credGet(credForId).catch(() => null);
+    const c = (r && r.ok) ? r.cred : {};
+    $('credUser').value = c.user || '';
+    $('credPass').value = c.pass || '';
+    $('credPin').value = c.pin || '';
+    $('credExtra').value = c.extra || '';
+    $('credNote').value = c.note || '';
+    $('credShow').checked = false;
+    setCredVisible(false);
+    msgEl('credMsg', '');
+    $('credModal').classList.remove('hidden');
+    $('credUser').focus();
+  }
+
+  $('credShow').addEventListener('change', () => setCredVisible($('credShow').checked));
+  $('credClose').addEventListener('click', () => $('credModal').classList.add('hidden'));
+  $('credSave').addEventListener('click', async () => {
+    if (!credForId) return;
+    const r = await window.api.credSet(credForId, {
+      user: $('credUser').value,
+      pass: $('credPass').value,
+      pin: $('credPin').value,
+      extra: $('credExtra').value,
+      note: $('credNote').value,
+    }).catch((e) => ({ ok: false, error: e.message }));
+    if (!r || !r.ok) { msgEl('credMsg', (r && r.error) || 'Could not save.', 'err'); return; }
+    msgEl('credMsg', 'Saved.', 'ok');
+    poll();
+    setTimeout(() => $('credModal').classList.add('hidden'), 700);
+  });
 
   /* ---- update settings -------------------------------------------------- */
   async function loadUpdateCfg() {
@@ -252,6 +440,7 @@
     const id = Number(btn.dataset.id);
     const act = btn.dataset.act;
     if (act === 'cloneThis') { doClone(id, $('cloneCount').value); return; }
+    if (act === 'cred') { openCred(id); return; }
     // Recorder: the recording and replaying happen inside the instance; this
     // only sends the command and shows what comes back.
     if (['record', 'stopRecord', 'play', 'stopPlay'].includes(act)) {
@@ -288,7 +477,7 @@
     if (!cell) return;
     const id = Number(cell.dataset.id);
     const row = rowsCache.find((r) => r.id === id);
-    const name = prompt(`Name for instance #${id}`, row ? row.name : '');
+    const name = await askText(`Name for instance #${id}`, row ? row.name : '');
     if (name == null) return;
     await window.api.rename(id, name).catch(() => {});
     poll();
@@ -381,7 +570,9 @@
     if (s && s.ok) { ORIGINAL_ID = s.originalId || 1; writeForm(s.settings); }
     const v = await window.api.version().catch(() => null);
     if (v && v.ok) $('footVersion').textContent = `v${v.version} · Chromium ${String(v.chrome).split('.')[0]}`;
+    await loadGroups();
     await poll();
+    renderGroupBar();
     refreshDisk();
     loadUpdateCfg();
     setInterval(() => { if (!document.hidden) poll(); }, 1000);

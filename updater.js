@@ -1,7 +1,7 @@
 /* ===========================================================================
  * Game Power — code updates straight from GitHub.
  *
- * On launch the app asks GitHub what is in `game-power/` on the main branch,
+ * On launch the app asks GitHub what is in its repo on the main branch,
  * compares each file against the copy on disk, and downloads only the ones
  * that differ. Reopen the app and you are running the newest code — there is
  * no installer to rebuild and no release to publish.
@@ -47,7 +47,9 @@ function saveCfg(patch) {
   const next = { ...loadCfg(), ...(patch || {}) };
   next.repo = String(next.repo || DEFAULT_CFG.repo).trim().replace(/^https?:\/\/github\.com\//i, '').replace(/\.git$/i, '');
   next.branch = String(next.branch || 'main').trim() || 'main';
-  next.dir = String(next.dir || 'game-power').trim().replace(/^\/+|\/+$/g, '');
+  // An empty dir is legitimate: it means the repo root, which is where the
+  // app's files live now that it has a repo of its own.
+  next.dir = String(next.dir == null ? DEFAULT_CFG.dir : next.dir).trim().replace(/^\/+|\/+$/g, '');
   next.token = String(next.token || '').trim();
   next.enabled = next.enabled !== false;
   cfg = next;
