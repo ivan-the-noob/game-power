@@ -271,10 +271,25 @@
     $('stRamFree').textContent = (m.hostFreeMB / 1024).toFixed(1);
     $('stRamSub').textContent = `GB of ${(m.hostTotalMB / 1024).toFixed(0)}`;
 
+    /* Say why something failed, in words, where they can be read.
+     *
+     * The reason used to live only in the status pill's tooltip, so an
+     * instance that could not boot showed "Booting…" and then "Failed" with no
+     * visible explanation anywhere — you had to know to hover. */
     const booting = m.rows.filter((r) => r.status === 'booting').length;
-    $('monitorNote').textContent = booting
-      ? `${booting} booting · ${m.running} running`
-      : (m.running ? `${m.running} running` : 'Nothing running.');
+    const broken = m.rows.filter((r) => r.status === 'error' && r.note);
+    const note = $('monitorNote');
+    if (broken.length) {
+      const first = broken[0];
+      note.textContent = `#${first.id} ${first.name}: ${first.note}`
+        + (broken.length > 1 ? `  (and ${broken.length - 1} more)` : '');
+      note.className = 'hint err';
+    } else {
+      note.textContent = booting
+        ? `${booting} booting · ${m.running} running · a cold boot takes about a minute`
+        : (m.running ? `${m.running} running` : 'Nothing running.');
+      note.className = 'hint';
+    }
     $('stopAllBtn').disabled = m.running === 0;
 
     const orig = m.rows.find((r) => r.original);

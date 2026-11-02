@@ -539,6 +539,35 @@ function startEmu(id, opts) {
   return { ok: true, child, log, serial: serialFor(id), port: portFor(id) };
 }
 
+/* Can this machine run a virtual machine at all?
+ *
+ * The emulator needs hardware acceleration — WHPX on Windows — and without it
+ * it exits almost immediately. From the outside that looked identical to a
+ * slow boot: the row said "Booting…" with 0 MB and 0% forever, and nothing
+ * anywhere said why. The emulator will answer this question directly, so ask
+ * it rather than leaving the user staring at a stalled row.
+ *
+ * The usual cause is virtualization switched off in the BIOS, or Hyper-V
+ * missing, neither of which the app can fix — but both of which it can name. */
+function accelCheck() {
+  const p = paths();
+  return new Promise((resolve) => {
+    if (!fs.existsSync(p.emulator)) { resolve({ ok: false, reason: 'The emulator is not installed yet.' }); return; }
+    execFile(p.emulator, ['-accel-check'], {
+      cwd: path.dirname(p.emulator), env: emuEnv(), windowsHide: true, timeout: 30000,
+    }, (err, stdout, stderr) => {
+      const out = `${stdout || ''}${stderr || ''}`.trim();
+      // It prints "accel: 0 ... is installed and usable" when all is well.
+      const good = /accel:\s*0/i.test(out) || /is installed and usable/i.test(out);
+      resolve({
+        ok: good,
+        reason: good ? '' : (out.split(/\r?\n/).filter(Boolean).pop() || 'Hardware acceleration is unavailable.'),
+        raw: out.slice(0, 500),
+      });
+    });
+  });
+}
+
 /* ---- ADB ----------------------------------------------------------------- */
 function adb(args, opts) {
   const p = paths();
@@ -739,7 +768,7 @@ module.exports = {
   setAvdHome, avdHome, avdName, avdDir, avdIni, avdExists,
   writeAvd, retargetAvd, tuneAvd, deleteAvd, avdConfig,
   portFor, serialFor, startEmu, killEmu, emuArgs,
-  adb, sh, bootState, waitBoot, screenSize, frame, pngSize,
+  adb, sh, bootState, waitBoot, screenSize, frame, pngSize, accelCheck,
   tap, swipe, key, typeText, installApk, listApps, launchApp, openUrl,
   trim, foregroundPkg, hasPkg, cleanPkg, TRIM_PACKAGES, flush,
   bootstrap, resolveDownloads, hasJava,

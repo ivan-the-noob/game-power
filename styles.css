@@ -253,3 +253,7 @@ code { font-family: var(--mono); font-size: 12px; color: var(--accent); }
    buttons on purpose: these take dozens of instances at once. */
 .tidy-row { margin: 10px 0 2px; gap: 8px; }
 .tidy-row .msg { margin-left: 4px; }
+
+/* A failure reason shown as plain text in the Instances header, not hidden in
+   a tooltip. An instance that cannot boot has to say so where it is read. */
+.hint.err { color: var(--red); font-weight: 600; }

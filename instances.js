@@ -334,6 +334,35 @@ function start(id) {
   // Booting takes real time (30-120s cold). Do it off the call so the UI stays
   // responsive, and report progress through the status field.
   (async () => {
+    /* Tell a dead emulator from a slow one, early.
+     *
+     * waitBoot polls for four minutes, so an emulator that died on the first
+     * second looked exactly like one that was simply taking its time: the row
+     * sat at "Booting…" with 0 MB and 0% CPU and said nothing. If no process
+     * exists after 25 seconds, it is not coming up, and the reason is worth
+     * more than the wait.
+     *
+     * The usual reason is hardware acceleration being unavailable — switched
+     * off in the BIOS, or Hyper-V missing. The app cannot fix that, but it can
+     * name it instead of leaving someone watching a stalled row. */
+    await wait(25000);
+    {
+      const early = live.get(id);
+      if (!early || early.child !== r.child || early.status === 'stopped') return;
+      const pid = await procstat.findByCmdline(android.avdName(id)).catch(() => null);
+      const state = await android.bootState(id).catch(() => 'offline');
+      if (!pid && state === 'offline') {
+        const accel = await android.accelCheck().catch(() => ({ ok: true, reason: '' }));
+        early.status = 'error';
+        early.note = accel.ok
+          ? `The emulator stopped straight away. ${(r.log.tail.match(/(PANIC|ERROR|WARNING)[^\n]*/) || ['It gave no reason.'])[0]}`.slice(0, 300)
+          : `Android cannot run on this PC: ${accel.reason} Virtualization is usually switched off in the BIOS — turn on Intel VT-x / AMD-V, or enable the Windows Hypervisor Platform.`;
+        return;
+      }
+      // The launcher may have handed off to the VM by now; keep the live pid.
+      if (pid) early.pid = pid;
+    }
+
     const boot = await android.waitBoot(id, 240000);
     const cur = live.get(id);
     if (!cur || cur.child !== r.child || cur.status === 'stopped') return;
