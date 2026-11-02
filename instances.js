@@ -1091,6 +1091,89 @@ function tile() {
   return { ok: true, tiled: 0, note: 'Instances are headless — the Dashboard is where you see them.' };
 }
 
+/* Everything that could explain a failure, in one readable block.
+ *
+ * An instance that will not start has its reason spread across four places:
+ * the emulator's own stdout, whether the machine can virtualise at all, what
+ * the SDK actually has installed, and the per-instance status. Hunting those
+ * down is not something a user should have to do, and "Booting…" on its own
+ * tells them nothing. This gathers the lot so it can be read, and copied. */
+async function diagnostics() {
+  ensureAvdHome();
+  const st = loadState();
+  const h = android.health();
+  const lines = [];
+  const add = (s) => lines.push(s == null ? '' : String(s));
+
+  /* Read the version from package.json rather than app.getVersion().
+   * getVersion() falls back to Electron's own version when the app path is not
+   * what it expects, and this report is the thing people copy and send — a
+   * wrong version in it sends everyone chasing the wrong build. */
+  let ver = '';
+  try { ver = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version; } catch (e) { ver = ''; }
+  add(`Game Power ${ver || app.getVersion()} · Electron ${process.versions.electron}`);
+  add(`${new Date().toLocaleString()}`);
+  add('');
+
+  add('--- this PC ---');
+  add(`RAM            ${Math.round(os.totalmem() / (1024 ** 3))} GB total, ${Math.round(os.freemem() / (1024 ** 3))} GB free`);
+  add(`CPU            ${(os.cpus()[0] || {}).model || '?'} (${os.cpus().length} threads)`);
+  add(`Windows        ${os.release()}`);
+  add('');
+
+  add('--- can Android run here? ---');
+  const accel = await android.accelCheck().catch((e) => ({ ok: false, reason: String(e.message || e) }));
+  add(`acceleration   ${accel.ok ? 'YES' : 'NO'}`);
+  if (!accel.ok) add(`reason         ${accel.reason}`);
+  if (accel.raw) add(`emulator says  ${accel.raw.replace(/\s*\r?\n\s*/g, ' ').trim()}`);
+  add('');
+
+  add('--- Android SDK ---');
+  add(`ready          ${h.ok ? 'YES' : 'NO'}`);
+  if (h.missing.length) add(`missing        ${h.missing.join(', ')}`);
+  add(`sdk root       ${h.paths.root}`);
+  add(`emulator       ${fs.existsSync(h.paths.emulator) ? 'found' : 'MISSING'}`);
+  add(`adb            ${fs.existsSync(h.paths.adb) ? 'found' : 'MISSING'}`);
+  add(`image          ${h.paths.image}`);
+  add(`image tag      ${h.tag}   (installed: ${(h.installedTags || []).join(', ') || 'none'})`);
+  add(`avd folder     ${android.avdHome()}`);
+  add('');
+
+  add('--- settings ---');
+  const s = st.settings;
+  add(`guest          ${s.ram} MB RAM, ${s.cores} core(s), ${s.gpu}`);
+  add(`screen         ${s.width}x${s.height} @ ${s.dpi}dpi, data ${s.diskMB} MB`);
+  add(`app            ${s.pkg || '(none chosen)'}`);
+  add('');
+
+  add('--- measurement ---');
+  const snap = await procstat.snapshot();
+  add(`memory readable ${snap ? 'YES' : 'NO — RAM and CPU will show a dash'}`);
+  add('');
+
+  add(`--- instances (${st.list.length}) ---`);
+  for (const row of st.list) {
+    const inst = live.get(Number(row.id));
+    const built = android.avdExists(row.id);
+    add(`#${row.id} ${row.name}`);
+    add(`   status      ${inst ? inst.status : 'stopped'}${inst && inst.note ? ` — ${inst.note}` : ''}`);
+    add(`   avd built   ${built ? 'yes' : 'no'}   serial ${android.serialFor(row.id)}   port ${android.portFor(row.id)}`);
+    if (inst) {
+      add(`   pid         ${inst.pid || '(none)'}   up ${Math.round((Date.now() - inst.startedAt) / 1000)}s`);
+      const tail = (inst.log && inst.log.tail) || '';
+      if (tail.trim()) {
+        add('   emulator output (most recent last):');
+        for (const l of tail.split(/\r?\n/).filter((x) => x.trim()).slice(-25)) add(`     ${l.trim()}`);
+      } else {
+        add('   emulator output: (nothing — it has printed no messages)');
+      }
+    }
+    add('');
+  }
+
+  return { ok: true, text: lines.join('\n') };
+}
+
 startWatchdog();
 
 module.exports = {
@@ -1102,5 +1185,5 @@ module.exports = {
   openGameSite, installApk, listApps, launchApp, setPkg,
   frame, screenOf, tapNorm, swipeNorm, key, typeText,
   recorderCfg, statusOf, isAlive, entry, takeMigrationNote,
-  clone, cloneStatus, tile, metrics, diskUsage, stopWatchdog, removeClones,
+  clone, cloneStatus, tile, metrics, diskUsage, stopWatchdog, removeClones, diagnostics,
 };

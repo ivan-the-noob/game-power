@@ -698,6 +698,40 @@
     refreshDisk();
   }
 
+  /* ---- the log ------------------------------------------------------------
+   * One button that answers "why is it not working". Opening it gathers the
+   * emulator's own output, whether this PC can virtualise, what the SDK has,
+   * and the state of every instance — the things that were previously spread
+   * across four places and a tooltip.
+   * ---------------------------------------------------------------------- */
+  async function loadDiag() {
+    $('diagText').textContent = 'reading…';
+    msgEl('diagMsg', '');
+    const r = await window.api.diag().catch((e) => ({ ok: false, error: e.message }));
+    $('diagText').textContent = (r && r.ok && r.text)
+      ? r.text
+      : `Could not gather it: ${(r && r.error) || 'unknown error'}`;
+    $('diagText').scrollTop = 0;
+  }
+
+  $('diagBtn').addEventListener('click', () => { $('diagModal').classList.remove('hidden'); loadDiag(); });
+  $('diagRefresh').addEventListener('click', loadDiag);
+  $('diagClose').addEventListener('click', () => $('diagModal').classList.add('hidden'));
+  $('diagCopy').addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText($('diagText').textContent || '');
+      msgEl('diagMsg', 'Copied.', 'ok');
+    } catch (e) {
+      // Clipboard can be refused; selecting it is still better than nothing.
+      const r = document.createRange();
+      r.selectNodeContents($('diagText'));
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(r);
+      msgEl('diagMsg', 'Selected — press Ctrl+C.', '');
+    }
+  });
+
   $('removeClonesBtn').addEventListener('click', () => tidy(false));
   $('startCleanBtn').addEventListener('click', () => tidy(true));
 

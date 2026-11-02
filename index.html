@@ -10,6 +10,7 @@
   <header class="topbar">
     <div class="brand"><span class="logo-mark" aria-hidden="true"></span> GAME POWER</div>
     <div class="top-actions">
+      <button id="diagBtn" title="Why is it not working? Shows the emulator's own output and everything that could explain a failure.">⚠ Show log</button>
       <button id="checkUpdateBtn" title="Pull the newest code from GitHub">Check for updates</button>
       <button id="stageBtn" title="Show every instance as a live tile inside one window">▦ Dashboard</button>
       <button id="stopAllBtn" class="danger">Stop all</button>
@@ -67,6 +68,24 @@
         <span id="appMsg" class="msg"></span>
         <button id="appClose">Cancel</button>
         <button id="appSave" class="primary">Use this one</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Everything that could explain a failure, in one place you can read and
+       copy. An instance that will not start has its reason spread across the
+       emulator's output, whether this PC can virtualise at all, and what the
+       SDK actually has — none of which should be a hunt. -->
+  <div id="diagModal" class="modal hidden">
+    <div class="modal-box" style="width: 860px; max-width: 94vw;">
+      <h2>What is going on</h2>
+      <p class="hint">The emulator's own output and the state of this PC. If something will not boot, the reason is in here. Copy it and send it over.</p>
+      <pre class="log diag-log" id="diagText">reading…</pre>
+      <div class="modal-actions">
+        <span id="diagMsg" class="msg"></span>
+        <button id="diagCopy">Copy all</button>
+        <button id="diagRefresh">Refresh</button>
+        <button id="diagClose" class="primary">Close</button>
       </div>
     </div>
   </div>

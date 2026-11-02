@@ -46,6 +46,7 @@ contextBridge.exposeInMainWorld('api', {
   remove: (id) => ipcRenderer.invoke('game:remove', id),
   reset: (id) => ipcRenderer.invoke('game:reset', id),
   removeClones: (opts) => ipcRenderer.invoke('game:removeClones', opts),
+  diag: () => ipcRenderer.invoke('game:diag'),
 
   checkUpdate: () => ipcRenderer.invoke('update:check'),
   updateStatus: () => ipcRenderer.invoke('update:status'),
