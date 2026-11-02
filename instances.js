@@ -349,9 +349,25 @@ async function stopNow(id) {
   id = Number(id);
   const inst = live.get(id);
   if (!inst) return { ok: true };
+
+  /* Flush the guest's filesystem BEFORE stopping the machine.
+   *
+   * `adb emu kill` stops the VM; it does not ask Android to shut down, so
+   * anything still in the guest's page cache goes with it. Measured: a file
+   * written and read back correctly was gone after a restart unless `sync`
+   * ran first — which is to say the login, the downloaded game, and
+   * everything a clone exists to inherit.
+   *
+   * `bootedAt` rather than the status field on purpose: stop() marks the
+   * instance stopped before calling this, so the status cannot be used to
+   * decide whether there is anything worth flushing. */
+  const everReady = inst.bootedAt > 0;
   inst.status = 'stopped';
-  // Ask it to shut down cleanly first: a killed guest can leave a half-written
-  // data partition behind, and that is the one failure that loses an account.
+  if (everReady) {
+    try {
+      if ((await android.bootState(id)) === 'booted') await android.flush(id);
+    } catch (e) { /* best effort — a guest that will not answer cannot be flushed */ }
+  }
   try { await android.killEmu(id); } catch (e) { /* ignore */ }
   for (let i = 0; i < 20; i += 1) {
     if ((await android.bootState(id)) === 'offline') break;
@@ -463,13 +479,23 @@ async function launchApp(id, pkg) {
  * anyone noticing.
  * -------------------------------------------------------------------------- */
 let watchdog = null;
+let watchTick = 0;
 function startWatchdog() {
   if (watchdog) return;
   watchdog = setInterval(async () => {
     const s = getSettings();
-    if (!s.kiosk) return;
+    watchTick += 1;
+    // Flush every fourth tick — once a minute. A clean stop flushes anyway,
+    // but a crash, a power cut or Task Manager does not, and an hour of
+    // progress sitting unflushed in a guest's page cache is a real loss.
+    const alsoFlush = watchTick % 4 === 0;
+
     for (const inst of [...live.values()]) {
       if (inst.status !== 'ready') continue;
+      if (alsoFlush) {
+        try { await android.flush(inst.id); } catch (e) { /* ignore */ }
+      }
+      if (!s.kiosk) continue;
       const row = entry(inst.id);
       const pkg = (row && row.pkg) || s.pkg;
       if (!pkg) continue;
@@ -570,21 +596,75 @@ function copyableSize(dir) {
   return total;
 }
 
-function copyDir(src, dest, onBytes) {
+/* Copy one AVD folder.
+ *
+ * Two things here were learned the hard way, by a clone that reported success
+ * and then would not boot:
+ *
+ *  - The copy must preserve holes. fs.copyFileSync writes real zeros, so the
+ *    6 GB data partition that occupies 2.4 GB needed 6 GB, ran the disk out
+ *    mid-copy, and left the clone without the one file that matters.
+ *
+ *  - A failed copy must NOT be shrugged off. The old code swallowed the error
+ *    "because a lock we cannot read is not worth failing the clone over",
+ *    which is exactly backwards: a clone missing its data partition is worth
+ *    failing over, loudly.
+ *
+ * Failures are collected rather than thrown so one unreadable leftover does
+ * not hide the state of everything else; clone() decides what is fatal. */
+async function copyDir(src, dest, onBytes, failures) {
   fs.mkdirSync(dest, { recursive: true });
   let entries = [];
-  try { entries = fs.readdirSync(src, { withFileTypes: true }); } catch (e) { return; }
+  try { entries = fs.readdirSync(src, { withFileTypes: true }); }
+  catch (e) { failures.push({ name: path.basename(src), error: String(e.message || e) }); return; }
+
   for (const e of entries) {
     if (skipName(e.name)) continue;
     const from = path.join(src, e.name);
     const to = path.join(dest, e.name);
-    if (e.isDirectory()) { copyDir(from, to, onBytes); continue; }
+    if (e.isDirectory()) { await copyDir(from, to, onBytes, failures); continue; }
     if (!e.isFile()) continue;
-    try {
-      fs.copyFileSync(from, to);
-      onBytes(fs.statSync(to).size);
-    } catch (err) { /* a lock we cannot read is not worth failing the clone over */ }
+
+    // The source has only just shut down, and Windows can hold a handle on a
+    // multi-gigabyte image a moment longer than the guest does.
+    let last = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await diskinfo.copySparse(from, to, onBytes);
+        last = null;
+        break;
+      } catch (err) {
+        last = err;
+        try { fs.rmSync(to, { force: true }); } catch (x) { /* ignore */ }
+        if (attempt < 2) await wait(1500 * (attempt + 1));
+      }
+    }
+    if (last) failures.push({ name: e.name, error: `${last.code || ''} ${last.message || last}`.trim() });
   }
+}
+
+/* Is the copy actually complete?
+ *
+ * Every file that should have travelled must exist at the same length. This
+ * is the check that would have caught the missing data partition instead of
+ * letting a broken clone sit in the list looking fine. */
+function verifyCopy(src, dest) {
+  const missing = [];
+  let entries = [];
+  try { entries = fs.readdirSync(src, { withFileTypes: true }); } catch (e) { return ['(could not read the source)']; }
+  for (const e of entries) {
+    if (skipName(e.name)) continue;
+    const from = path.join(src, e.name);
+    const to = path.join(dest, e.name);
+    if (e.isDirectory()) { missing.push(...verifyCopy(from, to)); continue; }
+    if (!e.isFile()) continue;
+    let want = 0;
+    try { want = fs.statSync(from).size; } catch (err) { continue; }
+    let got = -1;
+    try { got = fs.statSync(to).size; } catch (err) { got = -1; }
+    if (got !== want) missing.push(`${e.name} (${got < 0 ? 'not copied' : `${got} of ${want} bytes`})`);
+  }
+  return missing;
 }
 
 const freeBytes = () => diskinfo.freeBytes(android.avdHome());
@@ -667,7 +747,23 @@ async function clone(fromId, count) {
       cloneState.lastName = name;
       const dest = android.avdDir(id);
       try { fs.rmSync(dest, { recursive: true, force: true }); } catch (e) { /* ignore */ }
-      copyDir(srcDir, dest, (b) => { cloneState.copied += b; });
+
+      const failures = [];
+      await copyDir(srcDir, dest, (b) => { cloneState.copied += b; }, failures);
+
+      // Never leave a clone that looks fine and has no data partition. If
+      // anything is short or missing, throw the copy away rather than add it
+      // to the list — a broken clone is worse than no clone.
+      const missing = verifyCopy(srcDir, dest);
+      if (failures.length || missing.length) {
+        try { fs.rmSync(dest, { recursive: true, force: true }); } catch (e) { /* ignore */ }
+        try { fs.rmSync(android.avdIni(id), { force: true }); } catch (e) { /* ignore */ }
+        const why = failures.length
+          ? failures.map((f) => `${f.name}: ${f.error}`).join('; ')
+          : `incomplete: ${missing.join(', ')}`;
+        throw new Error(`The copy did not finish, so the clone was discarded — ${why}`);
+      }
+
       // The copy still calls itself by the source's name and points at the
       // source's folder. This is what makes it its own instance.
       android.retargetAvd(id, getSettings());

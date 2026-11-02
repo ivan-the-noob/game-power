@@ -47,23 +47,36 @@ function st(id) {
 }
 
 /* ---- stored steps -------------------------------------------------------- */
-function loadSteps(id) {
-  try {
-    const raw = JSON.parse(fs.readFileSync(fileFor(id), 'utf8'));
-    const steps = Array.isArray(raw && raw.steps) ? raw.steps : [];
-    return steps
-      .filter((s) => s && Number.isFinite(Number(s.x)) && Number.isFinite(Number(s.y)))
-      .map((s) => ({ x: Number(s.x), y: Number(s.y), dt: Math.max(0, Number(s.dt) || 0) }))
-      .slice(0, MAX_STEPS);
-  } catch (e) { return []; }
+function readFile(id) {
+  try { return JSON.parse(fs.readFileSync(fileFor(id), 'utf8')) || {}; } catch (e) { return {}; }
 }
 
-function saveSteps(id, steps) {
+function loadSteps(id) {
+  const steps = Array.isArray(readFile(id).steps) ? readFile(id).steps : [];
+  return steps
+    .filter((s) => s && Number.isFinite(Number(s.x)) && Number.isFinite(Number(s.y)))
+    .map((s) => ({ x: Number(s.x), y: Number(s.y), dt: Math.max(0, Number(s.dt) || 0) }))
+    .slice(0, MAX_STEPS);
+}
+
+/* The screen the recording was made on.
+ *
+ * Steps are device pixels, so they only mean anything against a screen of a
+ * known size. Without this, changing the screen size in Settings — or running
+ * the original's recording on an instance built at a different size — would
+ * put every tap somewhere else, and silently. */
+function loadScreen(id) {
+  const s = readFile(id).screen;
+  return (s && Number(s.w) > 0 && Number(s.h) > 0) ? { w: Number(s.w), h: Number(s.h) } : null;
+}
+
+function saveSteps(id, steps, screen) {
   if (!dir) return;
   try {
     fs.writeFileSync(fileFor(id), JSON.stringify({
       id: Number(id),
       savedAt: Date.now(),
+      screen: screen || null,
       steps: steps.slice(0, MAX_STEPS),
     }, null, 1));
   } catch (e) { /* ignore */ }
@@ -98,6 +111,11 @@ function record(id) {
   s.recording = true;
   s.buf = [];
   s.lastAt = 0;
+  s.screen = null;
+  // Note the screen this is being recorded against, so playback can scale if
+  // it ever runs somewhere a different size. Asked for in the background:
+  // the first tap matters more than this does.
+  android.screenSize(id).then((sz) => { if (sz) s.screen = sz; }).catch(() => {});
   s.msg = 'Recording — every tap on this instance is being saved.';
   push(id);
   return { ok: true };
@@ -108,7 +126,7 @@ function stopRecord(id) {
   if (!s.recording) return { ok: true };
   s.recording = false;
   const steps = s.buf || [];
-  saveSteps(id, steps);
+  saveSteps(id, steps, s.screen);
   s.buf = null;
   s.msg = `Saved ${steps.length} step${steps.length === 1 ? '' : 's'}.`;
   push(id);
@@ -202,6 +220,21 @@ async function play(id, cfg, opts) {
 
   (async () => {
     try {
+      // Scale, if this is running somewhere a different size from where it was
+      // recorded. Normally both are 1 and nothing moves.
+      let sx = 1;
+      let sy = 1;
+      const was = loadScreen(from);
+      if (was) {
+        const now = await android.screenSize(id).catch(() => null);
+        if (now && (now.w !== was.w || now.h !== was.h)) {
+          sx = now.w / was.w;
+          sy = now.h / was.h;
+          s.msg = `Scaling ${was.w}x${was.h} to ${now.w}x${now.h}.`;
+          push(id);
+        }
+      }
+
       for (let loop = 1; !s.stopFlag && (loops === 0 || loop <= loops); loop += 1) {
         s.loop = loop;
         for (let i = 0; i < steps.length; i += 1) {
@@ -214,7 +247,7 @@ async function play(id, cfg, opts) {
           if (s.stopFlag) break;
           s.step = i + 1;
           push(id);
-          await android.tap(id, step.x, step.y);
+          await android.tap(id, step.x * sx, step.y * sy);
         }
         if (s.stopFlag) break;
         const more = loops === 0 || loop < loops;

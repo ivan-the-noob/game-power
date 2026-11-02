@@ -445,6 +445,18 @@ const launchApp = (id, pkg) => sh(id, `monkey -p ${cleanPkg(pkg)} -c android.int
 const openUrl = (id, url) => adb(['-s', serialFor(id), 'shell', 'am', 'start', '-a', 'android.intent.action.VIEW', '-d', String(url)], { timeout: 15000 });
 const killEmu = (id) => adb(['-s', serialFor(id), 'emu', 'kill'], { timeout: 8000 });
 
+/* Push the guest's filesystem to its disk image.
+ *
+ * `adb emu kill` stops the virtual machine; it does not ask Android to shut
+ * down, so whatever is still in the guest's page cache is thrown away with
+ * it. Measured: a file written and read back correctly was simply gone after
+ * a restart — and with it would go the login, the downloaded game, and
+ * everything a clone exists to inherit.
+ *
+ * Generous timeout: this is flushing gigabytes, and it is the one step that
+ * must not be cut short. */
+const flush = (id) => sh(id, 'sync', { timeout: 60000 });
+
 /* ---- one app and nothing else -------------------------------------------
  * An instance exists to run a single game, so everything the guest would
  * normally do for a person using a phone is dead weight. These are the two
@@ -516,5 +528,5 @@ module.exports = {
   portFor, serialFor, startEmu, killEmu, emuArgs,
   adb, sh, bootState, waitBoot, screenSize, frame, pngSize,
   tap, swipe, key, typeText, installApk, listApps, launchApp, openUrl,
-  trim, foregroundPkg, hasPkg, cleanPkg, TRIM_PACKAGES,
+  trim, foregroundPkg, hasPkg, cleanPkg, TRIM_PACKAGES, flush,
 };
