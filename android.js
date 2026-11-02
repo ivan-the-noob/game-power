@@ -26,9 +26,38 @@ const path = require('path');
 const { spawn, execFile } = require('child_process');
 
 const API = 'android-30';
-const TAG = 'google_apis';
 const ABI = 'x86_64';
-const IMAGE_PKG = `system-images;${API};${TAG};${ABI}`;
+
+/* Which system image an instance runs, and why it is the biggest lever there
+ * is on memory.
+ *
+ *   google_apis  Android plus the Google stack. Measured: the emulator refused
+ *                a 1024 MB guest and forced 2048 — config.ini asked for 1024,
+ *                hardware-qemu.ini recorded 2048, and the guest reported
+ *                MemTotal 1.93 GB. On top of that the Play services are
+ *                running the whole time.
+ *
+ *   default      the same Android, built from AOSP, with none of that. No
+ *                Play services to run and a lower floor to argue with.
+ *
+ * The game here is a WebView wrapper with no native code and no Play
+ * dependency, so it has nothing to lose by running on AOSP. */
+const TAGS = ['default', 'google_apis'];
+let TAG = 'default';
+
+function setTag(tag) {
+  if (TAGS.includes(tag)) TAG = tag;
+  return TAG;
+}
+const getTag = () => TAG;
+const imagePkg = (tag) => `system-images;${API};${tag || TAG};${ABI}`;
+
+// Which image tags are actually downloaded, so the UI can offer a real choice
+// rather than one that fails on start.
+function installedTags() {
+  const root = sdkRoot();
+  return TAGS.filter((t) => fs.existsSync(path.join(root, 'system-images', API, t, ABI, 'system.img')));
+}
 
 // Console ports must be even and inside this range; two per emulator (console
 // + adb), so instances step by 2.
@@ -94,14 +123,16 @@ function health() {
   };
   const missing = [];
   if (!have.emulator) missing.push('emulator');
-  if (!have.image) missing.push(IMAGE_PKG);
+  if (!have.image) missing.push(imagePkg());
   return {
     ok: have.adb && have.emulator && have.image,
     have,
     missing,
     canInstall: have.sdkmanager,
     paths: p,
-    imagePkg: IMAGE_PKG,
+    imagePkg: imagePkg(),
+    tag: TAG,
+    installedTags: installedTags(),
   };
 }
 
@@ -292,7 +323,10 @@ function emuArgs(id, opts) {
     '-port', String(portFor(id)),
     '-no-audio',          // no host audio device, no mixer thread
     '-no-boot-anim',      // the animation is pure GPU work for nothing
-    '-no-snapshot-save',  // never write a GB-sized snapshot back on exit
+    // Quickboot off entirely, not just 'do not save'. With save-only the
+    // emulator still keeps a 2 GB ram.img around, which a clone then copies
+    // for nothing. Boots are cold either way, since nothing is ever saved.
+    '-no-snapshot',
     '-no-metrics',
     '-netdelay', 'none',
     '-netspeed', 'full',
@@ -521,7 +555,7 @@ async function hasPkg(id, pkg) {
 }
 
 module.exports = {
-  API, TAG, ABI, IMAGE_PKG, maxInstances,
+  API, ABI, TAGS, maxInstances, setTag, getTag, imagePkg, installedTags,
   paths, sdkRoot, health, installDeps,
   setAvdHome, avdHome, avdName, avdDir, avdIni, avdExists,
   writeAvd, retargetAvd, tuneAvd, deleteAvd, avdConfig,

@@ -41,7 +41,14 @@ const DEFAULTS = {
   // they are settings rather than constants.
   ram: 1024,           // MB of guest RAM. Below ~768 Android itself thrashes.
   cores: 1,
-  gpu: 'swiftshader_indirect',  // software GL: no GPU at all. 'host' is faster but uses the card.
+  gpu: 'host',         // hardware GL. 'swiftshader_indirect' uses no GPU but measured ~800 MB more.
+  /* Which Android to run. This is the biggest single lever on memory:
+   * with google_apis the emulator refused a 1024 MB guest and forced 2048
+   * (measured in hardware-qemu.ini, and the guest reported MemTotal 1.93 GB),
+   * and the Play services run the whole time on top of that. The game is a
+   * WebView wrapper with no native code and no Play dependency, so AOSP costs
+   * it nothing. Changing this only affects instances built afterwards. */
+  imageTag: 'default',
   width: 800,
   height: 480,
   dpi: 160,
@@ -80,6 +87,13 @@ function ensureAvdHome() {
   const dir = path.join(app.getPath('userData'), 'avd');
   try { fs.mkdirSync(dir, { recursive: true }); } catch (e) { /* ignore */ }
   android.setAvdHome(dir);
+  // The stored image choice has to reach android.js before anything asks it
+  // where the system image is. Read straight from the file rather than through
+  // getSettings(), which would call back into here.
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'game.json'), 'utf8'));
+    if (raw && raw.settings && raw.settings.imageTag) android.setTag(raw.settings.imageTag);
+  } catch (e) { /* first run: the default stands */ }
   recorder.configure({ dir: path.join(app.getPath('userData'), 'recordings') });
   avdHomeReady = true;
 }
@@ -151,7 +165,12 @@ function saveSettings(patch) {
   next.pkg = android.cleanPkg(next.pkg);
   next.ram = clamp(parseInt(next.ram, 10) || 1024, 512, 4096);
   next.cores = clamp(parseInt(next.cores, 10) || 1, 1, 4);
-  next.gpu = ['swiftshader_indirect', 'host', 'angle_indirect', 'off'].includes(next.gpu) ? next.gpu : 'swiftshader_indirect';
+  next.gpu = ['swiftshader_indirect', 'host', 'angle_indirect', 'off'].includes(next.gpu) ? next.gpu : 'host';
+  // Only offer an image that is actually downloaded, or starting would fail
+  // with a missing-image error the user cannot act on.
+  const tags = android.installedTags();
+  next.imageTag = tags.includes(next.imageTag) ? next.imageTag : (tags[0] || 'default');
+  android.setTag(next.imageTag);
   next.width = clamp(parseInt(next.width, 10) || 800, 320, 1920);
   next.height = clamp(parseInt(next.height, 10) || 480, 240, 1080);
   next.dpi = clamp(parseInt(next.dpi, 10) || 160, 120, 480);
@@ -568,7 +587,9 @@ const cloneState = { busy: false, from: null, newId: null, copied: 0, total: 0, 
 // generated configs carrying the source's own absolute paths. The emulator
 // rebuilds those from config.ini on first start. cache.img is dropped too —
 // it is rebuilt on boot, so copying it is gigabytes for nothing.
-const SKIP = new Set(['hardware-qemu.ini', 'emulator-user.ini', 'snapshots', 'cache.img', 'cache.img.qcow2']);
+const SKIP = new Set(['hardware-qemu.ini', 'emulator-user.ini', 'snapshots', 'cache.img', 'cache.img.qcow2',
+  // A dump of guest RAM, not of the disk. Worthless to a clone, and 2 GB of it.
+  'ram.img', 'ram.img.qcow2']);
 const skipName = (n) => SKIP.has(n) || n.endsWith('.lock') || n.endsWith('.tmp');
 
 function dirSize(dir) {

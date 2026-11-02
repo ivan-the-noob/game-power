@@ -1,6 +1,6 @@
 {
   "name": "game-power",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Many Android instances of one game on screen at once. One original you set up by hand; every other instance a byte-for-byte clone of it.",
   "main": "main.js",
   "scripts": {
