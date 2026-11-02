@@ -137,6 +137,7 @@ const asyncOk = (fn) => async (...args) => {
 /* ---- setup --------------------------------------------------------------- */
 ipcMain.handle('android:health', sync(() => instances.health()));
 ipcMain.handle('android:install', asyncOk(() => instances.installDeps((line) => toControl('android:log', line))));
+ipcMain.handle('android:ensureImage', asyncOk((_e, api, tag) => instances.ensureImage(api, tag, (line) => toControl('android:log', line))));
 
 /* ---- settings + metrics --------------------------------------------------- */
 ipcMain.handle('game:settings', sync(() => ({ ok: true, settings: instances.getSettings(), defaults: instances.DEFAULTS, originalId: instances.ORIGINAL_ID })));

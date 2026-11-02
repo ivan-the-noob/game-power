@@ -167,8 +167,15 @@
             <option value="swiftshader_indirect">Software — no GPU at all, but measured ~800 MB more</option>
           </select>
         </label>
+        <!-- Picking a version is not the same as having it. The button is
+             here because the alternative was a dropdown that showed a choice
+             the app had silently refused. -->
         <label>Android version
-          <select id="cfgApi"></select>
+          <span class="range-row">
+            <select id="cfgApi"></select>
+            <button id="dlImageBtn" class="tiny" title="Download the selected Android version (about 3 GB)">⤓ Download</button>
+          </span>
+          <span class="hint" id="apiNote">—</span>
         </label>
         <label>Android build
           <select id="cfgTag">

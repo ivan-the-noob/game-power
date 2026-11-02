@@ -334,6 +334,50 @@ function health() {
 
 function installDeps(onLog) { ensureAvdHome(); return android.installDeps(onLog); }
 
+/* Fetch an Android version that was chosen but is not on disk.
+ *
+ * The settings card said picking one would offer to fetch it. It did not:
+ * saveSettings quietly reverted to whatever was already installed, while the
+ * dropdown went on showing the choice — so the version looked selected, the
+ * instance kept running the old one, and nothing explained the gap.
+ *
+ * This is the missing half. The image is roughly 3 GB, so the caller gets
+ * progress rather than a frozen button. */
+async function ensureImage(api, tag, onLog) {
+  ensureAvdHome();
+  const wantApi = android.API_LEVELS.includes(api) ? api : android.getApi();
+  const wantTag = ['default', 'google_apis'].includes(tag) ? tag : android.getTag();
+
+  if (android.installedApis(wantTag).includes(wantApi)) {
+    return { ok: true, already: true, note: `${android.apiLabel(wantApi)} is already downloaded.` };
+  }
+
+  // Point android.js at the target so health() and bootstrap() both resolve
+  // paths for the version being fetched, not the one in use.
+  const prevApi = android.getApi();
+  const prevTag = android.getTag();
+  android.setApi(wantApi);
+  android.setTag(wantTag);
+  try {
+    const r = await android.installDeps(onLog);
+    if (!r.ok) {
+      // Leave the app on something that actually works.
+      android.setApi(prevApi);
+      android.setTag(prevTag);
+      return r;
+    }
+    saveSettings({ androidApi: wantApi, imageTag: wantTag });
+    return {
+      ok: true,
+      note: `${android.apiLabel(wantApi)} downloaded. Reset an instance (or make a new one) to build it on this version — the one you have now keeps the Android it was built with.`,
+    };
+  } catch (e) {
+    android.setApi(prevApi);
+    android.setTag(prevTag);
+    return { ok: false, error: String(e.message || e) };
+  }
+}
+
 /* ---- starting an instance ------------------------------------------------ */
 const isAlive = (id) => {
   const i = live.get(Number(id));
@@ -1276,7 +1320,7 @@ module.exports = {
   GAME_URL, DEFAULTS, ORIGINAL_ID,
   getSettings, saveSettings, applyLive, stageData,
   listGroups, createGroup, deleteGroup, setGroup, getCred, setCred,
-  health, installDeps,
+  health, installDeps, ensureImage,
   start, startAll, stop, stopAll, stopNow, stopAllNow, focus, reload, rename, remove, reset,
   openGameSite, installApk, listApps, launchApp, setPkg,
   frame, screenOf, tapNorm, swipeNorm, key, typeText,

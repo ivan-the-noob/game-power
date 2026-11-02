@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('api', {
   // Is Android set up on this machine, and fetch it if not.
   androidHealth: () => ipcRenderer.invoke('android:health'),
   androidInstall: () => ipcRenderer.invoke('android:install'),
+  ensureImage: (api, tag) => ipcRenderer.invoke('android:ensureImage', api, tag),
   onAndroidLog: (cb) => ipcRenderer.on('android:log', (_e, line) => cb(line)),
 
   getSettings: () => ipcRenderer.invoke('game:settings'),

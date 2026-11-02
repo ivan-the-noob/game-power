@@ -87,6 +87,7 @@
         return `<option value="${esc(a)}">${names[num] || a} (API ${num}) — ${mark}</option>`;
       }).join('');
       sel.value = levels.includes(want) ? want : h.api;
+      paintApiNote(h);
     }
     for (const id of ['startOriginalBtn', 'startAllBtn', 'cloneBtn', 'openSiteBtn', 'installApkBtn', 'pickAppBtn']) {
       $(id).disabled = !androidReady;
@@ -100,6 +101,73 @@
     }
     return androidReady;
   }
+
+  /* Say, next to the picker, whether the chosen version is actually here.
+   *
+   * The dropdown used to show a selection the app had silently refused — the
+   * version looked chosen, the instance ran a different one, and nothing
+   * accounted for the difference. */
+  function paintApiNote(h) {
+    const sel = $('cfgApi');
+    const note = $('apiNote');
+    const btn = $('dlImageBtn');
+    if (!h || !sel.value) { note.textContent = ''; return; }
+    const have = (h.installedApis || []).includes(sel.value);
+    const inUse = h.api === sel.value;
+    btn.disabled = have;
+    btn.textContent = have ? '✓ Downloaded' : '⤓ Download';
+    if (!have) {
+      note.textContent = 'Not downloaded — about 3 GB. Press Download, or instances keep running the version you already have.';
+      note.className = 'hint warn-text';
+    } else if (inUse) {
+      note.textContent = 'Downloaded and in use. New instances are built on this version.';
+      note.className = 'hint';
+    } else {
+      note.textContent = 'Downloaded. Save to use it for instances built from now on.';
+      note.className = 'hint';
+    }
+  }
+
+  $('cfgApi').addEventListener('change', async () => {
+    const h = await window.api.androidHealth().catch(() => null);
+    paintApiNote(h);
+  });
+
+  /* Download the chosen Android version.
+   *
+   * The settings card claimed saving would offer this. It never did, so the
+   * promise is kept here instead: a real button, with the sdkmanager/zip
+   * progress going to the same log the first-time setup uses. */
+  $('dlImageBtn').addEventListener('click', async () => {
+    const btn = $('dlImageBtn');
+    const api = $('cfgApi').value;
+    const tag = $('cfgTag').value;
+    const label = $('cfgApi').selectedOptions[0] ? $('cfgApi').selectedOptions[0].textContent.split('—')[0].trim() : api;
+    if (!confirm(`Download ${label}?\n\nIt is about 3 GB and is shared by every instance built on it afterwards.\n\nYour existing instances keep the Android they were built with — reset one, or make a new one, to use this.`)) return;
+
+    btn.disabled = true;
+    btn.textContent = 'Downloading…';
+    $('setupCard').classList.remove('hidden');
+    $('setupLog').classList.remove('hidden');
+    $('setupLog').textContent = '';
+    msgEl('setupMsg', `Downloading ${label} — a few GB, so give it time.`, '');
+    msgEl('cfgMsg', `Downloading ${label}…`, '');
+
+    const r = await window.api.ensureImage(api, tag).catch((e) => ({ ok: false, error: e.message }));
+    btn.disabled = false;
+    if (!r || !r.ok) {
+      btn.textContent = '⤓ Download';
+      msgEl('setupMsg', (r && r.error) || 'Download failed.', 'err');
+      msgEl('cfgMsg', (r && r.error) || 'Download failed.', 'err');
+      return;
+    }
+    msgEl('setupMsg', r.note || 'Done.', 'ok');
+    msgEl('cfgMsg', r.note || 'Done.', 'ok');
+    await checkAndroid();
+    const s = await window.api.getSettings().catch(() => null);
+    if (s && s.ok) writeForm(s.settings);
+    poll();
+  });
 
   $('setupBtn').addEventListener('click', async () => {
     const btn = $('setupBtn');
@@ -718,7 +786,7 @@
       + (r.reset ? '. The original was wiped too.' : '. The original was kept.'), 'ok');
     lastSig = '';
     await loadGroups();
-    await checkGame();
+    await checkAndroid();
     poll();
     refreshDisk();
   }
@@ -787,9 +855,26 @@
     msgEl('cfgMsg', 'Dashboard opened.', 'ok');
   });
 
+  /* Save, then show what was actually saved.
+   *
+   * Settings are validated on the way in — an Android version that is not
+   * downloaded gets refused, for one — and the form used to keep displaying
+   * the rejected value regardless. So a version could look selected while the
+   * app ran a different one, with nothing to explain it. Writing the returned
+   * settings back means the form can only ever show the truth. */
   async function saveSettings() {
-    const r = await window.api.apply(readForm()).catch((e) => ({ ok: false, error: e.message }));
+    const wanted = readForm();
+    const r = await window.api.apply(wanted).catch((e) => ({ ok: false, error: e.message }));
     if (!r || !r.ok) { msgEl('cfgMsg', (r && r.error) || 'Could not save.', 'err'); return false; }
+    if (r.settings) {
+      writeForm(r.settings);
+      const h = await window.api.androidHealth().catch(() => null);
+      paintApiNote(h);
+      if (wanted.androidApi && r.settings.androidApi !== wanted.androidApi) {
+        msgEl('cfgMsg', `That Android version is not downloaded yet, so it was left on ${r.settings.androidApi.replace('android-', 'API ')}. Press Download beside it to get it.`, 'err');
+        return false;
+      }
+    }
     return true;
   }
 
