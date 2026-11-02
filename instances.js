@@ -157,6 +157,29 @@ function loadState() {
     migratedFrom = `Game Power now runs real Android instances, so the ${n} instance${n === 1 ? '' : 's'} from the browser version cannot carry ${n === 1 ? 'its' : 'their'} login over — a browser session is not a disk image. Names, groups and saved details were kept. Set the original up again, then clone it.`;
   }
 
+  /* Carry an old profile up to the mid-range device.
+   *
+   * Stored settings win over defaults, which is right — they are the user's
+   * choices. But the low-end numbers were never a choice: they were my
+   * defaults, picked to be "the smallest thing that boots", and they are
+   * exactly what made the game stutter. Someone upgrading would have installed
+   * the new build, seen 1 core and 800x480 still in place, and found nothing
+   * had changed.
+   *
+   * Only values still sitting at the OLD default are raised. Change any of
+   * them yourself and it is left alone, because then it IS a choice. */
+  const OLD_DEFAULTS = { ram: 1024, cores: 1, width: 800, height: 480, dpi: 160, diskMB: 4096, gpu: 'swiftshader_indirect' };
+  const raised = [];
+  for (const [key, old] of Object.entries(OLD_DEFAULTS)) {
+    if (state.settings[key] === old && DEFAULTS[key] !== old) {
+      state.settings[key] = DEFAULTS[key];
+      raised.push(`${key} ${old} -> ${DEFAULTS[key]}`);
+    }
+  }
+  if (raised.length) {
+    migratedFrom = `Your instances were still set to the old low-end phone (${raised.filter((r) => /^(cores|width|ram)/.test(r)).join(', ')}). They have been raised to a mid-range one — 1280x720, 4 cores, 3 GB — which is what the stuttering was. Anything you had changed yourself was left alone. Restart an instance for it to take effect.`;
+  }
+
   /* Do not ask for an Android that is not here.
    *
    * The default is the newest version, which is right for a fresh install and
