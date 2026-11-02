@@ -39,8 +39,18 @@ const DEFAULTS = {
 
   // The lowest-RAM/GPU knobs. These are the whole point of the rebuild, so
   // they are settings rather than constants.
-  ram: 1024,           // MB of guest RAM. Below ~768 Android itself thrashes.
-  cores: 1,
+  /* A mid-range phone, not the cheapest thing that boots.
+   *
+   * These started as "the smallest numbers that still run", and the result
+   * played like it: 800x480 at 160dpi is a 2010 screen, and ONE core is the
+   * single biggest cause of a game stuttering — Android alone has more than
+   * one thread to run, so the game and the system were taking turns.
+   *
+   * What a mid phone actually looks like, and what these now are: 720p, a
+   * normal pixel density, four cores, a few GB of RAM. The cost is memory per
+   * instance, which is the trade being made on purpose. */
+  ram: 3072,           // MB of guest RAM. Below ~768 Android itself thrashes.
+  cores: 4,
   gpu: 'host',         // hardware GL. 'swiftshader_indirect' uses no GPU but measured ~800 MB more.
   /* Which Android to run. This is the biggest single lever on memory:
    * with google_apis the emulator refused a 1024 MB guest and forced 2048
@@ -49,10 +59,17 @@ const DEFAULTS = {
    * WebView wrapper with no native code and no Play dependency, so AOSP costs
    * it nothing. Changing this only affects instances built afterwards. */
   imageTag: 'default',
-  width: 800,
-  height: 480,
-  dpi: 160,
-  diskMB: 4096,
+  /* Which Android version. Newest by default — it was only ever pinned to
+   * Android 11 because that is the image that happened to download first.
+   * The game's APK asks for minSdk 22 and targets 34, so nothing modern is out
+   * of its reach, and a newer Android draws through a newer graphics stack.
+   * Changing this rebuilds the instance: a different system image is a
+   * different disk, so the app has to be installed again. */
+  androidApi: 'android-36',
+  width: 1280,         // 720p landscape — a mid-range phone, not a 2010 one
+  height: 720,
+  dpi: 240,            // hdpi. 160 made everything look stretched and coarse.
+  diskMB: 8192,        // the APK alone is 1.26 GB before it unpacks anything
   headless: true,      // no host window; the dashboard streams frames instead
   trim: true,          // switch off everything in the guest that is not the game
   kiosk: true,         // keep the game in front, relaunch it if it dies
@@ -93,6 +110,7 @@ function ensureAvdHome() {
   try {
     const raw = JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'game.json'), 'utf8'));
     if (raw && raw.settings && raw.settings.imageTag) android.setTag(raw.settings.imageTag);
+    if (raw && raw.settings && raw.settings.androidApi) android.setApi(raw.settings.androidApi);
   } catch (e) { /* first run: the default stands */ }
   recorder.configure({ dir: path.join(app.getPath('userData'), 'recordings') });
   avdHomeReady = true;
@@ -139,6 +157,21 @@ function loadState() {
     migratedFrom = `Game Power now runs real Android instances, so the ${n} instance${n === 1 ? '' : 's'} from the browser version cannot carry ${n === 1 ? 'its' : 'their'} login over — a browser session is not a disk image. Names, groups and saved details were kept. Set the original up again, then clone it.`;
   }
 
+  /* Do not ask for an Android that is not here.
+   *
+   * The default is the newest version, which is right for a fresh install and
+   * wrong for an existing one: someone already running Android 11 with the
+   * game installed would be told the image is "missing" and sent to the setup
+   * card, with a working setup sitting right underneath. So when the chosen
+   * version is not downloaded but another one is, use what is actually here.
+   * Downloading a newer one is then a deliberate choice, not a surprise. */
+  const have = android.installedApis(state.settings.imageTag);
+  if (have.length && !have.includes(state.settings.androidApi)) {
+    state.settings.androidApi = have[0];
+  }
+  android.setApi(state.settings.androidApi);
+  android.setTag(state.settings.imageTag);
+
   if (!state.list.some((i) => Number(i.id) === ORIGINAL_ID)) {
     state.list.unshift({ id: ORIGINAL_ID, name: 'Original', from: null, createdAt: Date.now() });
   }
@@ -171,6 +204,12 @@ function saveSettings(patch) {
   const tags = android.installedTags();
   next.imageTag = tags.includes(next.imageTag) ? next.imageTag : (tags[0] || 'default');
   android.setTag(next.imageTag);
+  // Same rule for the Android version: never select an image that is not on
+  // disk, or starting would fail with a missing-image error nobody can act on.
+  const apis = android.installedApis(next.imageTag);
+  next.androidApi = android.API_LEVELS.includes(next.androidApi) ? next.androidApi : 'android-36';
+  if (apis.length && !apis.includes(next.androidApi)) next.androidApi = apis[0];
+  android.setApi(next.androidApi);
   next.width = clamp(parseInt(next.width, 10) || 800, 320, 1920);
   next.height = clamp(parseInt(next.height, 10) || 480, 240, 1080);
   next.dpi = clamp(parseInt(next.dpi, 10) || 160, 120, 480);

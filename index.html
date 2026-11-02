@@ -163,8 +163,17 @@
         </label>
         <label>Graphics
           <select id="cfgGpu">
-            <option value="swiftshader_indirect">Software — no GPU at all, more CPU</option>
             <option value="host">Hardware — uses the graphics card, much faster</option>
+            <option value="swiftshader_indirect">Software — no GPU at all, but measured ~800 MB more</option>
+          </select>
+        </label>
+        <label>Android version
+          <select id="cfgApi"></select>
+        </label>
+        <label>Android build
+          <select id="cfgTag">
+            <option value="default">AOSP — no Google Play services, lighter</option>
+            <option value="google_apis">Google APIs — includes Play services</option>
           </select>
         </label>
         <label>Screen
@@ -180,7 +189,7 @@
         <label class="check"><input type="checkbox" id="cfgTrim" /> One app only — switch off search, wallpapers, animations and the rest of Android that the game never calls</label>
         <label class="check"><input type="checkbox" id="cfgKiosk" /> Keep the game in front, and start it again if it closes</label>
       </div>
-      <p class="hint">RAM, cores, graphics and screen size apply the next time an instance starts — a running virtual machine cannot be re-sized.</p>
+      <p class="hint">RAM, cores, graphics and screen size apply the next time an instance starts — a running virtual machine cannot be re-sized. <strong>Changing the Android version or build is different:</strong> those are a different disk, so the instance is rebuilt from scratch and the game has to be installed again. Versions not yet downloaded are marked below; picking one and saving will ask you to fetch it.</p>
 
       <h2 class="sub">The dashboard</h2>
       <div class="grid2">

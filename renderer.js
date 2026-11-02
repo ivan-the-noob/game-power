@@ -66,7 +66,28 @@
     const h = await window.api.androidHealth().catch(() => null);
     androidReady = !!(h && h.ok);
     $('setupCard').classList.toggle('hidden', androidReady);
-    if (h) $('setupState').textContent = androidReady ? 'Ready.' : `Missing: ${h.missing.join(', ')}`;
+    if (h) {
+      $('setupState').textContent = androidReady
+        ? `Ready — ${h.apiName || ''}`
+        : `Missing: ${h.missing.join(', ')}`;
+
+      /* The version list, with what is downloaded marked.
+       *
+       * Offering a version that is not on disk is fine — saving it asks for
+       * the download — but pretending they are all equally ready is not, so
+       * each one says which it is. */
+      const sel = $('cfgApi');
+      const installed = h.installedApis || [];
+      const want = sel.value || h.api;
+      const levels = h.apiLevels || [h.api];
+      sel.innerHTML = levels.map((a) => {
+        const num = Number(String(a).replace(/^android-/, ''));
+        const names = { 36: 'Android 16', 35: 'Android 15', 34: 'Android 14', 33: 'Android 13', 32: 'Android 12L', 31: 'Android 12', 30: 'Android 11' };
+        const mark = installed.includes(a) ? 'downloaded' : 'needs download';
+        return `<option value="${esc(a)}">${names[num] || a} (API ${num}) — ${mark}</option>`;
+      }).join('');
+      sel.value = levels.includes(want) ? want : h.api;
+    }
     for (const id of ['startOriginalBtn', 'startAllBtn', 'cloneBtn', 'openSiteBtn', 'installApkBtn', 'pickAppBtn']) {
       $(id).disabled = !androidReady;
     }
@@ -110,6 +131,8 @@
       ram: Number($('cfgRam').value) || 1024,
       cores: Number($('cfgCores').value) || 1,
       gpu: $('cfgGpu').value,
+      androidApi: $('cfgApi').value,
+      imageTag: $('cfgTag').value,
       width: Number($('cfgW').value) || 800,
       height: Number($('cfgH').value) || 480,
       dpi: Number($('cfgDpi').value) || 160,
@@ -132,6 +155,8 @@
     $('cfgRam').value = s.ram;
     $('cfgCores').value = s.cores;
     $('cfgGpu').value = s.gpu;
+    if (s.androidApi) $('cfgApi').value = s.androidApi;
+    if (s.imageTag) $('cfgTag').value = s.imageTag;
     $('cfgW').value = s.width;
     $('cfgH').value = s.height;
     $('cfgDpi').value = s.dpi;

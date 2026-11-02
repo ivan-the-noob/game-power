@@ -25,8 +25,39 @@ const os = require('os');
 const path = require('path');
 const { spawn, execFile } = require('child_process');
 
-const API = 'android-30';
 const ABI = 'x86_64';
+
+/* Which Android version an instance runs.
+ *
+ * Was hardcoded to android-30 (Android 11) because that is what got downloaded
+ * first, not because anything chose it. Newest first: the game's APK needs
+ * only minSdk 22 and targets 34, so nothing here is out of its reach, and a
+ * newer Android renders through a newer, faster graphics stack.
+ *
+ * Changing this rebuilds an instance from scratch — a different system image
+ * means a different disk, so the app has to be installed again. */
+const API_LEVELS = ['android-36', 'android-35', 'android-34', 'android-33', 'android-32', 'android-31', 'android-30'];
+let API = API_LEVELS[0];
+
+function setApi(api) {
+  if (API_LEVELS.includes(api)) API = api;
+  return API;
+}
+const getApi = () => API;
+// Android 16 is API 36, 15 is 35, and so on: the number is the API level.
+const apiLabel = (api) => {
+  const n = Number(String(api || API).replace(/^android-/, ''));
+  const names = { 36: 'Android 16', 35: 'Android 15', 34: 'Android 14', 33: 'Android 13', 32: 'Android 12L', 31: 'Android 12', 30: 'Android 11' };
+  return `${names[n] || 'Android'} (API ${n})`;
+};
+
+// Which API levels are actually downloaded for the current tag, so the UI can
+// only offer images that exist.
+function installedApis(tag) {
+  const root = sdkRoot();
+  const t = tag || TAG;
+  return API_LEVELS.filter((a) => fs.existsSync(path.join(root, 'system-images', a, t, ABI, 'system.img')));
+}
 
 /* Which system image an instance runs, and why it is the biggest lever there
  * is on memory.
@@ -133,6 +164,10 @@ function health() {
     imagePkg: imagePkg(),
     tag: TAG,
     installedTags: installedTags(),
+    api: API,
+    apiName: apiLabel(API),
+    apiLevels: API_LEVELS,
+    installedApis: installedApis(),
   };
 }
 
@@ -763,7 +798,8 @@ async function hasPkg(id, pkg) {
 }
 
 module.exports = {
-  API, ABI, TAGS, maxInstances, setTag, getTag, imagePkg, installedTags,
+  ABI, TAGS, API_LEVELS, maxInstances, setTag, getTag, imagePkg, installedTags,
+  setApi, getApi, apiLabel, installedApis,
   paths, sdkRoot, health, installDeps,
   setAvdHome, avdHome, avdName, avdDir, avdIni, avdExists,
   writeAvd, retargetAvd, tuneAvd, deleteAvd, avdConfig,
