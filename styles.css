@@ -248,3 +248,8 @@ pre.log {
 .grow-input { flex: 1; min-width: 0; font-family: var(--mono); font-size: 12px; }
 .row .grow-input { width: auto; }
 code { font-family: var(--mono); font-size: 12px; color: var(--accent); }
+
+/* Bulk tidy-up, under the instances table. Set apart from the per-row Delete
+   buttons on purpose: these take dozens of instances at once. */
+.tidy-row { margin: 10px 0 2px; gap: 8px; }
+.tidy-row .msg { margin-left: 4px; }

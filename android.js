@@ -136,6 +136,179 @@ function health() {
   };
 }
 
+/* ---- setting the SDK up on a machine that has nothing -------------------
+ * sdkmanager is the official way, and it is useless on a fresh PC: it ships
+ * inside the SDK it is supposed to install, and it needs a JDK. On a machine
+ * with neither, "Download and set up" could only ever print an error telling
+ * the user to go and install Android Studio first.
+ *
+ * Everything the emulator needs is published as a plain zip, so fetch those
+ * directly instead. No Java, no Android Studio, nothing to install by hand.
+ * Windows can unpack a zip on its own, so there is no dependency here at all.
+ * ------------------------------------------------------------------------ */
+const DL_BASE = 'https://dl.google.com/android/repository/';
+const REPO_XML = `${DL_BASE}repository2-3.xml`;
+// The AOSP images live in their own index, separate from the Google ones.
+const SYSIMG_XML = `${DL_BASE}sys-img/android/sys-img2-3.xml`;
+const SYSIMG_XML_GOOGLE = `${DL_BASE}sys-img/google_apis/sys-img2-3.xml`;
+
+function fetchText(url) {
+  return new Promise((resolve, reject) => {
+    require('https').get(url, { headers: { 'User-Agent': 'GamePower' } }, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        res.resume();
+        fetchText(res.headers.location).then(resolve, reject);
+        return;
+      }
+      if (res.statusCode !== 200) { res.resume(); reject(new Error(`${url} answered ${res.statusCode}`)); return; }
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => { body += c; });
+      res.on('end', () => resolve(body));
+    }).on('error', reject);
+  });
+}
+
+function download(url, dest, onProgress) {
+  return new Promise((resolve, reject) => {
+    const file = fs.createWriteStream(dest);
+    const go = (u) => {
+      require('https').get(u, { headers: { 'User-Agent': 'GamePower' } }, (res) => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) { res.resume(); go(res.headers.location); return; }
+        if (res.statusCode !== 200) { res.resume(); reject(new Error(`download failed (${res.statusCode})`)); return; }
+        const total = Number(res.headers['content-length'] || 0);
+        let got = 0;
+        let lastPct = -1;
+        res.on('data', (c) => {
+          got += c.length;
+          if (!total || !onProgress) return;
+          const pct = Math.floor((got / total) * 100);
+          // Only on change, or this floods the log with one line per packet.
+          if (pct !== lastPct && pct % 2 === 0) { lastPct = pct; onProgress(pct, got, total); }
+        });
+        res.pipe(file);
+        file.on('finish', () => file.close(() => resolve({ bytes: got })));
+      }).on('error', reject);
+    };
+    file.on('error', reject);
+    go(url);
+  });
+}
+
+// Windows unpacks zips itself; PowerShell is the way to ask it to.
+function unzip(zipPath, destDir) {
+  return new Promise((resolve, reject) => {
+    fs.mkdirSync(destDir, { recursive: true });
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      `Expand-Archive -LiteralPath '${zipPath.replace(/'/g, "''")}' -DestinationPath '${destDir.replace(/'/g, "''")}' -Force`,
+    ], { windowsHide: true, timeout: 900000, maxBuffer: 4 * 1024 * 1024 }, (err, _o, stderr) => {
+      if (err) { reject(new Error(`unzip failed: ${String(stderr || err.message).slice(0, 300)}`)); return; }
+      resolve(true);
+    });
+  });
+}
+
+/* Which zip to fetch for each piece.
+ *
+ * The index lists many builds; the highest build number is the current one,
+ * which is what sdkmanager would have picked too. */
+async function resolveDownloads(tag) {
+  const pick = (xml, re) => {
+    const all = [...new Set((xml.match(re) || []))];
+    if (!all.length) return null;
+    // Sort by the build/revision number inside the name, highest last.
+    all.sort((a, b) => (Number((a.match(/(\d+)/g) || []).pop()) - Number((b.match(/(\d+)/g) || []).pop())));
+    return all[all.length - 1];
+  };
+
+  const repo = await fetchText(REPO_XML);
+  const emu = pick(repo, /emulator-windows_x64-\d+\.zip/g);
+  if (!emu) throw new Error('Could not find the emulator package in Google\'s index.');
+
+  const imgXml = await fetchText(tag === 'google_apis' ? SYSIMG_XML_GOOGLE : SYSIMG_XML);
+  const apiNum = API.replace(/^android-/, '');
+  const img = pick(imgXml, new RegExp(`x86_64-${apiNum}_r\\d+\\.zip`, 'g'));
+  if (!img) throw new Error(`Could not find a ${tag} system image for ${API} in Google's index.`);
+
+  return {
+    // The name doubles as the temp filename, and Expand-Archive refuses
+    // anything not actually called .zip — so it must keep the extension.
+    platformTools: { url: `${DL_BASE}platform-tools-latest-windows.zip`, name: 'platform-tools-latest-windows.zip' },
+    emulator: { url: DL_BASE + emu, name: emu },
+    sysImg: { url: `${DL_BASE}sys-img/${tag === 'google_apis' ? 'google_apis' : 'android'}/${img}`, name: img },
+  };
+}
+
+/* Download and lay out only the pieces that are missing. */
+async function bootstrap(onLog) {
+  const say = (s) => { try { onLog && onLog(String(s)); } catch (e) { /* ignore */ } };
+  const root = sdkRoot();
+  const p = paths();
+  fs.mkdirSync(root, { recursive: true });
+  const tmp = path.join(os.tmpdir(), 'gp-sdk-dl');
+  fs.mkdirSync(tmp, { recursive: true });
+
+  say(`Setting up the Android SDK in ${root}`);
+  const want = await resolveDownloads(TAG);
+
+  const jobs = [];
+  if (!fs.existsSync(p.adb)) jobs.push({ ...want.platformTools, into: root, label: 'platform-tools (adb)' });
+  if (!fs.existsSync(p.emulator)) jobs.push({ ...want.emulator, into: root, label: 'emulator' });
+  if (!fs.existsSync(path.join(p.image, 'system.img'))) {
+    // The zip holds an "x86_64" folder that belongs under the API and tag.
+    jobs.push({ ...want.sysImg, into: path.join(root, 'system-images', API, TAG, '..'), label: `system image (${TAG})`, imageTag: true });
+  }
+  if (!jobs.length) { say('Already set up.'); return { ok: true, already: true }; }
+
+  for (const job of jobs) {
+    const zip = path.join(tmp, job.name);
+    say(`Downloading ${job.label}…`);
+    try {
+      await download(job.url, zip, (pct) => say(`${job.label}: ${pct}%`));
+    } catch (e) {
+      return { ok: false, error: `Could not download ${job.label}: ${e.message}` };
+    }
+    say(`Unpacking ${job.label}…`);
+    try {
+      const into = job.imageTag ? path.join(root, 'system-images', API, TAG) : job.into;
+      fs.mkdirSync(into, { recursive: true });
+      // The system-image zip already contains an x86_64/ folder, so it is
+      // unpacked one level up from where that folder has to end up.
+      await unzip(zip, job.imageTag ? path.dirname(into) + path.sep + path.basename(into) : into);
+    } catch (e) {
+      return { ok: false, error: `Could not unpack ${job.label}: ${e.message}` };
+    }
+    try { fs.rmSync(zip, { force: true }); } catch (e) { /* ignore */ }
+  }
+
+  // The image zip unpacks as <tag>/x86_64/..., flatten if that happened.
+  const imgDir = paths().image;
+  if (!fs.existsSync(path.join(imgDir, 'system.img'))) {
+    const nested = path.join(path.dirname(imgDir), 'x86_64', 'x86_64');
+    if (fs.existsSync(path.join(nested, 'system.img'))) {
+      say('Tidying the image layout…');
+      for (const f of fs.readdirSync(nested)) {
+        fs.renameSync(path.join(nested, f), path.join(imgDir, f));
+      }
+    }
+  }
+
+  const after = health();
+  if (!after.ok) return { ok: false, error: `Still missing: ${after.missing.join(', ')}`, missing: after.missing };
+  say('Android is ready.');
+  return { ok: true };
+}
+
+/* Is there a JDK, which is the only thing sdkmanager needs that we do not
+ * already have? Spelled java.exe on Windows: execFile does not apply PATHEXT
+ * to the command itself, so plain 'java' reports ENOENT on a machine that has
+ * Java installed and working — which it did here, on a laptop with OpenJDK 17. */
+const hasJava = () => {
+  const bin = process.platform === 'win32' ? 'java.exe' : 'java';
+  try { execFileSync(bin, ['-version'], { windowsHide: true, timeout: 10000, stdio: 'ignore' }); return true; }
+  catch (e) { return false; }
+};
+
 /* ---- fetching the packages ----------------------------------------------- */
 // A long download with licence prompts. Streams its output back so the UI can
 // show progress rather than a frozen button.
@@ -144,8 +317,14 @@ function installDeps(onLog) {
   const h = health();
   const want = h.missing.slice();
   if (!want.length) return Promise.resolve({ ok: true, already: true });
-  if (!h.canInstall) {
-    return Promise.resolve({ ok: false, error: 'Android SDK command-line tools are not installed, so the emulator cannot be fetched automatically. Install them from Android Studio > SDK Manager > SDK Tools.' });
+  /* No sdkmanager, or no Java to run it with: fetch the zips directly.
+   *
+   * This used to give up here and tell the user to install Android Studio
+   * first, which made "Download and set up" a button that could only ever
+   * print an error on a machine that had nothing — exactly the machine it
+   * exists for. */
+  if (!h.canInstall || !hasJava()) {
+    return bootstrap(onLog);
   }
   return new Promise((resolve) => {
     const say = (s) => { try { onLog && onLog(String(s)); } catch (e) { /* ignore */ } };
@@ -563,4 +742,5 @@ module.exports = {
   adb, sh, bootState, waitBoot, screenSize, frame, pngSize,
   tap, swipe, key, typeText, installApk, listApps, launchApp, openUrl,
   trim, foregroundPkg, hasPkg, cleanPkg, TRIM_PACKAGES, flush,
+  bootstrap, resolveDownloads, hasJava,
 };

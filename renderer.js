@@ -640,6 +640,39 @@
     refreshDisk();
   });
 
+  /* Bulk tidy-up.
+   *
+   * Both are destructive and irreversible, so each says exactly how many rows
+   * it is about to take and what survives — a count is the only thing that
+   * makes "are you sure" a real question. */
+  async function tidy(alsoReset) {
+    const clones = rowsCache.filter((r) => !r.original).length;
+    const what = alsoReset
+      ? `Delete all ${clones} clone${clones === 1 ? '' : 's'} AND wipe the original?\n\n`
+        + 'Everything goes: every Android image, the installed game, every login, and your groups. '
+        + 'You would start again from "Set up Android".'
+      : `Delete all ${clones} clone${clones === 1 ? '' : 's'}?\n\n`
+        + 'Their Android images go with them. The original — and the game installed on it — is kept, '
+        + 'so you can clone again straight away.';
+    if (!clones && !alsoReset) { msgEl('tidyMsg', 'There are no clones to remove.', ''); return; }
+    if (!confirm(what + '\n\nThis cannot be undone.')) return;
+
+    msgEl('tidyMsg', 'Stopping everything and clearing up…', '');
+    const r = await window.api.removeClones({ alsoReset }).catch((e) => ({ ok: false, error: e.message }));
+    if (!r || !r.ok) { msgEl('tidyMsg', (r && r.error) || 'Could not clear up.', 'err'); return; }
+    msgEl('tidyMsg', `Removed ${r.removed} instance${r.removed === 1 ? '' : 's'}`
+      + (r.freedMB ? `, freeing ${gb(r.freedMB)}` : '')
+      + (r.reset ? '. The original was wiped too.' : '. The original was kept.'), 'ok');
+    lastSig = '';
+    await loadGroups();
+    await checkGame();
+    poll();
+    refreshDisk();
+  }
+
+  $('removeClonesBtn').addEventListener('click', () => tidy(false));
+  $('startCleanBtn').addEventListener('click', () => tidy(true));
+
   $('startAllBtn').addEventListener('click', async () => {
     const btn = $('startAllBtn');
     btn.disabled = true;

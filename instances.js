@@ -826,6 +826,65 @@ async function remove(id) {
   return { ok: true };
 }
 
+/* Clear out everything but the original, in one go.
+ *
+ * Carried-over rows from an older version have no Android image behind them,
+ * and deleting thirty-nine of them one button at a time is not a reasonable
+ * thing to ask of anyone. `alsoReset` goes further and wipes the original too,
+ * which is the "start from nothing" case.
+ *
+ * Groups are kept unless the original is being wiped as well: a group is a
+ * label the user typed, and losing those is not implied by "remove the
+ * clones". */
+async function removeClones(opts) {
+  if (cloneState.busy) return { ok: false, error: 'A clone is running — wait for it to finish.' };
+  const alsoReset = !!(opts && opts.alsoReset);
+  ensureDirs();
+
+  await stopAllNow();
+  await wait(900);
+
+  const st = loadState();
+  const doomed = st.list.filter((r) => Number(r.id) !== ORIGINAL_ID);
+  let freedMB = 0;
+
+  for (const row of doomed) {
+    const dir = android.avdDir(row.id);
+    try {
+      if (fs.existsSync(dir)) freedMB += Math.round(dirSize(dir) / (1024 * 1024));
+    } catch (e) { /* a size we cannot read is not worth failing over */ }
+    android.deleteAvd(row.id);
+  }
+  st.list = st.list.filter((r) => Number(r.id) === ORIGINAL_ID);
+
+  // The original may have gone missing from the list entirely in an older
+  // file; loadState puts it back on the next read, but be explicit here.
+  if (!st.list.length) {
+    st.list.push({ id: ORIGINAL_ID, name: 'Original', from: null, createdAt: Date.now() });
+  }
+
+  if (alsoReset) {
+    const dir = android.avdDir(ORIGINAL_ID);
+    try {
+      if (fs.existsSync(dir)) freedMB += Math.round(dirSize(dir) / (1024 * 1024));
+    } catch (e) { /* ignore */ }
+    android.deleteAvd(ORIGINAL_ID);
+    const orig = st.list.find((r) => Number(r.id) === ORIGINAL_ID);
+    if (orig) { orig.pkg = ''; orig.group = ''; }
+    // Nothing is installed anywhere now, so the remembered app is a lie.
+    st.settings.pkg = '';
+    st.groups = [];
+  }
+
+  persist();
+  return {
+    ok: true,
+    removed: doomed.length,
+    freedMB,
+    reset: alsoReset,
+  };
+}
+
 // Wipe one instance back to a fresh Android, keeping it in the list.
 async function reset(id) {
   id = Number(id);
@@ -984,5 +1043,5 @@ module.exports = {
   openGameSite, installApk, listApps, launchApp, setPkg,
   frame, screenOf, tapNorm, swipeNorm, key, typeText,
   recorderCfg, statusOf, isAlive, entry, takeMigrationNote,
-  clone, cloneStatus, tile, metrics, diskUsage, stopWatchdog,
+  clone, cloneStatus, tile, metrics, diskUsage, stopWatchdog, removeClones,
 };

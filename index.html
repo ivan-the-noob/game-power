@@ -223,6 +223,13 @@
         <h2>Instances</h2>
         <span class="hint" id="monitorNote">Nothing running.</span>
       </div>
+      <!-- Carried-over rows from an older version have no Android image behind
+           them, and deleting dozens one at a time is not reasonable. -->
+      <div class="row tidy-row">
+        <button id="removeClonesBtn" class="danger tiny" title="Delete every clone and its Android image. The original and its game are kept.">🧹 Remove all clones</button>
+        <button id="startCleanBtn" class="danger tiny" title="Delete every clone AND wipe the original back to nothing. Everything starts from scratch.">⟲ Start clean</button>
+        <span id="tidyMsg" class="msg"></span>
+      </div>
       <div class="group-bar" id="groupBar"></div>
       <div class="table-wrap">
         <table>
