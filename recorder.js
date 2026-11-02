@@ -1,15 +1,17 @@
 /* ===========================================================================
  * Game Power — the click recorder.
  *
- * Same idea as the browser version, different mechanism, and the difference
- * is the point. There, a recorded click was a synthetic DOM event the page
- * could tell apart from a real one — which is why replaying a click into a
- * username field never focused it. Here a step is an ADB tap, which Android
- * delivers through the same path as a finger. Nothing can tell them apart, so
- * text fields, buttons and canvases all behave.
+ * Same idea through three engines, and only the last step ever changed: a
+ * recorded click has been a synthetic DOM event, an ADB tap, and now a
+ * Windows message aimed at a game window. So this file does not know which it
+ * is — the two calls that touch the game are handed in by whoever configures
+ * it (see `inject` below), which is why none of the loop, timing or storage
+ * logic had to be rewritten any of those times.
  *
- * A step is stored in DEVICE pixels, not as a fraction of a tile, so a
- * recording replays identically whatever size you were viewing at.
+ * A step is stored in the window's own pixels, not as a fraction of a tile,
+ * so a recording replays identically whatever size you were viewing at. The
+ * size it was recorded against is saved beside it, and playback scales if the
+ * window it runs on turns out to be a different size.
  *
  * Recordings live in userData/recordings/<id>.json, so they outlive a restart
  * and can be replayed on ANY instance — record once on the original, run it on
@@ -18,9 +20,18 @@
 const fs = require('fs');
 const path = require('path');
 
-const android = require('./android');
-
 const MAX_STEPS = 2000;
+
+/* How a step reaches the game.
+ *
+ * The recorder deliberately knows nothing about what it is driving. It has
+ * been an in-page DOM event, an ADB tap, and now a Windows message to a game
+ * window; only the two calls below ever changed, so they are supplied from
+ * outside instead of imported. */
+let inject = {
+  click: async () => ({ ok: false, error: 'No input backend configured.' }),
+  surface: async () => null,     // { w, h } of whatever the clicks are measured against
+};
 
 // id -> runtime state. Nothing in here is persisted; the steps are.
 const live = new Map();
@@ -34,6 +45,7 @@ function configure(opts) {
     try { fs.mkdirSync(dir, { recursive: true }); } catch (e) { /* ignore */ }
   }
   if (opts && typeof opts.onState === 'function') notify = opts.onState;
+  if (opts && opts.injector) inject = opts.injector;
 }
 
 const fileFor = (id) => path.join(dir || '.', `rec-${Number(id)}.json`);
@@ -115,7 +127,7 @@ function record(id) {
   // Note the screen this is being recorded against, so playback can scale if
   // it ever runs somewhere a different size. Asked for in the background:
   // the first tap matters more than this does.
-  android.screenSize(id).then((sz) => { if (sz) s.screen = sz; }).catch(() => {});
+  inject.surface(id).then((sz) => { if (sz) s.screen = sz; }).catch(() => {});
   s.msg = 'Recording — every tap on this instance is being saved.';
   push(id);
   return { ok: true };
@@ -226,7 +238,7 @@ async function play(id, cfg, opts) {
       let sy = 1;
       const was = loadScreen(from);
       if (was) {
-        const now = await android.screenSize(id).catch(() => null);
+        const now = await inject.surface(id).catch(() => null);
         if (now && (now.w !== was.w || now.h !== was.h)) {
           sx = now.w / was.w;
           sy = now.h / was.h;
@@ -247,7 +259,7 @@ async function play(id, cfg, opts) {
           if (s.stopFlag) break;
           s.step = i + 1;
           push(id);
-          await android.tap(id, step.x * sx, step.y * sy);
+          await inject.click(id, step.x * sx, step.y * sy);
         }
         if (s.stopFlag) break;
         const more = loops === 0 || loop < loops;

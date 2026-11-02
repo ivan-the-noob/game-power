@@ -1,9 +1,9 @@
 /* ===========================================================================
  * Game Power — control panel.
  *
- * One original, and clones made from it. An instance is a real Android guest,
- * so the RAM column is the private working set of that guest's whole process
- * tree — what it genuinely costs, not the shared system image it maps.
+ * One original, and clones made from it. An instance is the game's own
+ * Windows client running in its own folder, so the RAM column is the private
+ * working set of that client's process tree — what it genuinely costs.
  * ======================================================================== */
 (function () {
   'use strict';
@@ -17,10 +17,9 @@
   let rowsCache = [];
   let cloneWasBusy = false;
   let groupsCache = [];
-  let groupFilter = '';          // '' = All
-  let androidReady = false;
-  let recSources = new Set();    // instances that have something recorded
-  // id -> { steps, recording, playing } as reported by the recorder
+  let groupFilter = '';
+  let gameReady = false;
+  let recSources = new Set();
   const recState = new Map();
 
   function msgEl(id, text, kind) {
@@ -29,10 +28,7 @@
     el.className = 'msg' + (kind ? ' ' + kind : '');
   }
 
-  /* ---- asking for a line of text -----------------------------------------
-   * Electron does not implement window.prompt — it returns nothing and shows
-   * nothing — so every "name this" box has to be a real one.
-   * ---------------------------------------------------------------------- */
+  /* ---- asking for a line of text ---------------------------------------- */
   let askResolve = null;
 
   function askText(title, value) {
@@ -58,67 +54,52 @@
     else if (e.key === 'Escape') closeAsk(null);
   });
 
-  /* ---- is Android installed? ---------------------------------------------
-   * Without the emulator and a system image there is nothing to run, so this
-   * card is the first thing shown and everything else stays disabled.
-   * ---------------------------------------------------------------------- */
-  async function checkAndroid() {
-    const h = await window.api.androidHealth().catch(() => null);
-    androidReady = !!(h && h.ok);
-    $('setupCard').classList.toggle('hidden', androidReady);
-    if (h) $('setupState').textContent = androidReady ? 'Ready.' : `Missing: ${h.missing.join(', ')}`;
-    for (const id of ['startOriginalBtn', 'startAllBtn', 'cloneBtn', 'openSiteBtn', 'installApkBtn', 'pickAppBtn']) {
-      $(id).disabled = !androidReady;
-    }
-    // Said once, on the first launch after the switch from the browser engine.
+  /* ---- where is the game? ----------------------------------------------- */
+  async function checkGame() {
+    const h = await window.api.health().catch(() => null);
+    gameReady = !!(h && h.ok);
+    $('gamePath').value = (h && h.gamePath) || '';
+    $('setupState').textContent = gameReady ? `Ready — ${h.exe}` : ((h && h.error) || 'Not set.');
+    $('setupCard').classList.toggle('setup', !gameReady);
+    $('installNote').textContent = gameReady
+      ? `Install is ${gb(h.installMB)}. Shared by link: ${[...(h.linkDirs || []), ...(h.bigFiles || []).map((f) => f.name)].join(', ') || 'nothing found'}. Instances are built in ${h.clientsRoot}`
+      : 'Pick the folder that contains the game\'s .exe.';
+    for (const id of ['startOriginalBtn', 'startAllBtn', 'cloneBtn', 'resetOriginalBtn']) $(id).disabled = !gameReady;
+
     if (h && h.migrated) {
       const bar = $('updateBar');
       bar.classList.remove('hidden');
       $('updateText').textContent = h.migrated;
       $('updateRestart').classList.add('hidden');
     }
-    return androidReady;
+    return gameReady;
   }
 
-  $('setupBtn').addEventListener('click', async () => {
-    const btn = $('setupBtn');
-    btn.disabled = true;
-    $('setupLog').classList.remove('hidden');
-    $('setupLog').textContent = '';
-    msgEl('setupMsg', 'Downloading — this is a few GB, so give it time.', '');
-    const r = await window.api.androidInstall().catch((e) => ({ ok: false, error: e.message }));
-    btn.disabled = false;
-    if (!r || !r.ok) { msgEl('setupMsg', (r && r.error) || 'Setup failed.', 'err'); return; }
-    msgEl('setupMsg', 'Android is ready.', 'ok');
-    checkAndroid();
+  $('pickPathBtn').addEventListener('click', async () => {
+    const r = await window.api.setPath(null).catch((e) => ({ ok: false, error: e.message }));
+    if (!r || !r.ok) { if (r && r.error !== 'Cancelled.') msgEl('cfgMsg', (r && r.error) || 'Could not use that folder.', 'err'); return; }
+    msgEl('cfgMsg', `Found ${r.exe} — install is ${gb(r.installMB)}.`, 'ok');
+    await checkGame();
+    const s = await window.api.getSettings().catch(() => null);
+    if (s && s.ok) writeForm(s.settings);
+    poll();
   });
 
-  if (window.api.onAndroidLog) {
-    window.api.onAndroidLog((line) => {
-      const el = $('setupLog');
-      el.classList.remove('hidden');
-      // Keep the tail only: sdkmanager prints a progress line per percent.
-      el.textContent = (el.textContent + line + '\n').split('\n').slice(-12).join('\n');
-      el.scrollTop = el.scrollHeight;
-    });
-  }
+  $('openFolderBtn').addEventListener('click', () => window.api.openFolder(ORIGINAL_ID).catch(() => {}));
 
   /* ---- settings --------------------------------------------------------- */
   function readForm() {
     return {
-      url: $('cfgUrl').value.trim(),
-      ram: Number($('cfgRam').value) || 1024,
-      cores: Number($('cfgCores').value) || 1,
-      gpu: $('cfgGpu').value,
       width: Number($('cfgW').value) || 800,
-      height: Number($('cfgH').value) || 480,
-      dpi: Number($('cfgDpi').value) || 160,
-      diskMB: Number($('cfgDisk').value) || 4096,
-      headless: $('cfgHeadless').checked,
-      trim: $('cfgTrim').checked,
-      kiosk: $('cfgKiosk').checked,
-      tileFps: Number($('cfgTileFps').value) || 1,
-      zoomFps: Number($('cfgZoomFps').value) || 5,
+      height: Number($('cfgH').value) || 600,
+      fpsLimit: Number($('cfgFps').value) || 30,
+      glowQuality: Number($('cfgGlow').value) || 0,
+      waterQuality: Number($('cfgWater').value) || 0,
+      shadowQuality: Number($('cfgShadow').value) || 0,
+      antialias: Number($('cfgAA').value) || 0,
+      muteAll: $('cfgMute').checked,
+      runInBackground: $('cfgBackground').checked,
+      fullscreen: $('cfgFullscreen').checked,
       recLoops: Number($('cfgLoops').value) || 0,
       recLoopGapMin: Number($('cfgLoopGapMin').value) || 0,
       recLoopGap: Number($('cfgLoopGap').value) || 0,
@@ -128,19 +109,16 @@
   }
 
   function writeForm(s) {
-    $('cfgUrl').value = s.url || '';
-    $('cfgRam').value = s.ram;
-    $('cfgCores').value = s.cores;
-    $('cfgGpu').value = s.gpu;
     $('cfgW').value = s.width;
     $('cfgH').value = s.height;
-    $('cfgDpi').value = s.dpi;
-    $('cfgDisk').value = s.diskMB;
-    $('cfgHeadless').checked = s.headless !== false;
-    $('cfgTrim').checked = s.trim !== false;
-    $('cfgKiosk').checked = s.kiosk !== false;
-    $('cfgTileFps').value = s.tileFps != null ? s.tileFps : 1;
-    $('cfgZoomFps').value = s.zoomFps != null ? s.zoomFps : 5;
+    $('cfgFps').value = s.fpsLimit;
+    $('cfgGlow').value = String(s.glowQuality);
+    $('cfgWater').value = String(s.waterQuality);
+    $('cfgShadow').value = String(s.shadowQuality);
+    $('cfgAA').value = String(s.antialias);
+    $('cfgMute').checked = s.muteAll !== false;
+    $('cfgBackground').checked = s.runInBackground !== false;
+    $('cfgFullscreen').checked = !!s.fullscreen;
     $('cfgLoops').value = s.recLoops != null ? s.recLoops : 0;
     $('cfgLoopGapMin').value = s.recLoopGapMin != null ? s.recLoopGapMin : 0;
     $('cfgLoopGap').value = s.recLoopGap != null ? s.recLoopGap : 1;
@@ -148,23 +126,19 @@
     $('cfgFixedGap').value = s.recFixedGap != null ? s.recFixedGap : 0;
   }
 
-  /* ---- the table ----------------------------------------------------------
-   * This redraws once a second, and rebuilding the rows wholesale would throw
-   * away whatever you were in the middle of — an open group dropdown closed
-   * itself the moment the mouse moved. So the rebuild only happens when the
-   * rows actually change shape; the rest of the time RAM, CPU and uptime are
-   * written straight into the cells that already exist. And a rebuild never
-   * runs while something in the table has focus: it waits until you are done.
-   * ------------------------------------------------------------------------ */
-  // A guest is sized in gigabytes, so the thresholds sit far above a browser's.
-  const ramClass = (mb) => (mb > 1400 ? 'max' : mb > 900 ? 'hot' : '');
+  /* ---- the table ---------------------------------------------------------
+   * Rebuilt only when the rows change shape, and never while something in the
+   * table has focus: a full redraw once a second would close an open group
+   * dropdown the moment the mouse moved.
+   * ---------------------------------------------------------------------- */
+  const ramClass = (mb) => (mb > 1200 ? 'max' : mb > 700 ? 'hot' : '');
 
   let lastSig = '';
   let rebuildWanted = false;
 
   const rowSignature = (rows) => rows.map((r) => {
     const rec = recState.get(r.id) || {};
-    return [r.id, r.name, r.group || '', r.status, r.hasCred ? 1 : 0, r.pkg || '',
+    return [r.id, r.name, r.group || '', r.status, r.hasCred ? 1 : 0, r.built ? 1 : 0,
       rec.recording ? 1 : 0, rec.playing ? 1 : 0, rec.steps || 0].join('|');
   }).join(';') + '::' + groupsCache.join(',') + '::' + [...recSources].sort().join(',');
 
@@ -185,16 +159,15 @@
     }
   }
 
-  // Once you stop interacting with the table, catch up on anything deferred.
   $('rows').addEventListener('focusout', () => {
     if (rebuildWanted) { rebuildWanted = false; lastSig = ''; poll(); }
   });
 
   function statusPill(r) {
-    if (r.status === 'ready') return '<span class="pill on">Ready</span>';
-    if (r.status === 'booting') return '<span class="pill warn" title="Android is starting. A cold boot takes around a minute.">Booting…</span>';
-    if (r.status === 'error') return `<span class="pill bad" title="${esc(r.note || '')}">Failed</span>`;
-    return '<span class="pill off">Stopped</span>';
+    if (r.status === 'running') return '<span class="pill on">Running</span>';
+    if (r.status === 'starting') return '<span class="pill warn">Starting…</span>';
+    if (r.status === 'error') return `<span class="pill bad" title="${esc(r.note || '')}">Closed</span>`;
+    return `<span class="pill off">${r.built ? 'Stopped' : 'Not built'}</span>`;
   }
 
   function renderRows(m) {
@@ -202,15 +175,13 @@
     const body = $('rows');
     const shown = groupFilter ? m.rows.filter((r) => (r.group || '') === groupFilter) : m.rows;
     if (!shown.length) {
-      body.innerHTML = `<tr><td colspan="8" class="empty">Nothing in "${esc(groupFilter)}" yet. Pick a group on a row to move it here.</td></tr>`;
+      body.innerHTML = `<tr><td colspan="8" class="empty">Nothing in "${esc(groupFilter)}" yet.</td></tr>`;
       lastSig = '';
       return;
     }
-    const peak = Math.max(1200, ...shown.map((r) => r.ramMB));
+    const peak = Math.max(600, ...shown.map((r) => r.ramMB));
     const sig = rowSignature(shown);
     if (sig === lastSig) { updateInPlace(shown, peak); return; }
-    // Something structural changed — but never yank a control out from under
-    // the mouse. Hold the rebuild until focus leaves the table.
     if (body.contains(document.activeElement)) { rebuildWanted = true; updateInPlace(shown, peak); return; }
     lastSig = sig;
 
@@ -224,36 +195,33 @@
         ? '<span class="tag orig">original</span>'
         : (r.from ? `<span class="tag" title="Cloned from instance #${r.from}">from #${r.from}</span>` : '');
       const rec = recState.get(r.id) || {};
-      const ready = r.status === 'ready';
-
-      // Play is offered even with nothing recorded here, as long as the
-      // original has a recording: that is the whole point of recording once.
+      const running = r.status === 'running' || r.status === 'starting';
       const borrow = !rec.steps && recSources.has(ORIGINAL_ID) && r.id !== ORIGINAL_ID;
-      const canPlay = ready && (rec.steps > 0 || borrow);
+      const canPlay = running && (rec.steps > 0 || borrow);
       const playTitle = borrow ? "Run the original's recording on this instance" : "Replay this instance's recording on a loop";
 
       const acts = r.alive
         ? `${rec.recording
-            ? `<button class="tiny danger-on" data-act="stopRecord" data-id="${r.id}" title="Stop recording">■ Stop rec</button>`
-            : `<button class="tiny" data-act="record" data-id="${r.id}" title="Record every tap made on this instance, until you stop"${ready ? '' : ' disabled'}>● Rec</button>`}
+            ? `<button class="tiny danger-on" data-act="stopRecord" data-id="${r.id}">■ Stop rec</button>`
+            : `<button class="tiny" data-act="record" data-id="${r.id}" title="Record every click you make on this instance"${running ? '' : ' disabled'}>● Rec</button>`}
            ${rec.playing
-            ? `<button class="tiny go-on" data-act="stopPlay" data-id="${r.id}" title="Stop playback">⏹ Stop</button>`
+            ? `<button class="tiny go-on" data-act="stopPlay" data-id="${r.id}">⏹ Stop</button>`
             : `<button class="tiny${borrow ? ' borrowed' : ''}" data-act="play" data-id="${r.id}" title="${esc(playTitle)}"${canPlay ? '' : ' disabled'}>▶ Play</button>`}
-           <span class="steps" title="Taps recorded on this instance">${rec.steps || 0}</span>
-           <button class="tiny" data-act="reload" data-id="${r.id}" title="Force-stop the game and start it again"${ready ? '' : ' disabled'}>Restart app</button>
+           <span class="steps" title="Clicks recorded on this instance">${rec.steps || 0}</span>
+           <button class="tiny" data-act="reload" data-id="${r.id}" title="Close and start it again">Restart</button>
            <button class="tiny" data-act="stop" data-id="${r.id}">Stop</button>`
-        : `<button class="tiny" data-act="start" data-id="${r.id}"${androidReady ? '' : ' disabled'}>Start</button>
-           <button class="tiny" data-act="cloneThis" data-id="${r.id}" title="Make a new instance that is a copy of this one">Clone</button>
-           ${r.original ? '' : `<button class="tiny" data-act="remove" data-id="${r.id}" title="Delete this clone and its data">Delete</button>`}`;
+        : `<button class="tiny" data-act="start" data-id="${r.id}"${gameReady ? '' : ' disabled'}>Start</button>
+           <button class="tiny" data-act="cloneThis" data-id="${r.id}" title="Make a new instance from this one">Clone</button>
+           ${r.original ? '' : `<button class="tiny" data-act="remove" data-id="${r.id}" title="Delete this instance's own folder. The game install is untouched.">Delete</button>`}`;
 
       const opts = ['', ...groupsCache].map((g) =>
         `<option value="${esc(g)}"${(r.group || '') === g ? ' selected' : ''}>${g ? esc(g) : '— none —'}</option>`).join('');
-      const details = `<button class="tiny${r.hasCred ? ' has-cred' : ''}" data-act="cred" data-id="${r.id}" title="${r.hasCred ? 'Saved details for this account' : 'Save the login details for this account'}">🔑 Details</button>`;
+      const details = `<button class="tiny${r.hasCred ? ' has-cred' : ''}" data-act="cred" data-id="${r.id}" title="Saved details for this account">🔑 Details</button>`;
 
       return `<tr data-id="${r.id}">
         <td class="idx num">#${r.id}</td>
         <td class="name" data-act="rename" data-id="${r.id}" title="Double-click to rename">${esc(r.name)}${tag}</td>
-        <td><select class="row-group" data-id="${r.id}" title="Move this instance to a group">${opts}</select></td>
+        <td><select class="row-group" data-id="${r.id}">${opts}</select></td>
         <td>${statusPill(r)}</td>
         <td>${ram}</td>
         <td>${cpu}</td>
@@ -271,29 +239,21 @@
     $('stRamFree').textContent = (m.hostFreeMB / 1024).toFixed(1);
     $('stRamSub').textContent = `GB of ${(m.hostTotalMB / 1024).toFixed(0)}`;
 
-    const booting = m.rows.filter((r) => r.status === 'booting').length;
-    $('monitorNote').textContent = booting
-      ? `${booting} booting · ${m.running} running`
+    const failed = m.rows.filter((r) => r.status === 'error').length;
+    $('monitorNote').textContent = failed
+      ? `${m.running} running · ${failed} closed unexpectedly`
       : (m.running ? `${m.running} running` : 'Nothing running.');
     $('stopAllBtn').disabled = m.running === 0;
 
     const orig = m.rows.find((r) => r.original);
     $('originNote').textContent = orig
-      ? (orig.status === 'ready' ? `Ready · ${orig.ramMB} MB`
-        : orig.status === 'booting' ? 'Booting…'
-          : orig.status === 'error' ? (orig.note || 'Failed') : 'Stopped')
+      ? (orig.status === 'running' ? `Running · ${orig.ramMB} MB`
+        : orig.status === 'starting' ? 'Starting…'
+          : orig.status === 'error' ? (orig.note || 'Closed') : (orig.built ? 'Stopped' : 'Not built yet'))
       : '—';
     $('startOriginalBtn').textContent = orig && orig.alive ? '▶ Running' : '▶ Start the original';
-    $('startOriginalBtn').disabled = !androidReady || !!(orig && orig.alive);
+    $('startOriginalBtn').disabled = !gameReady || !!(orig && orig.alive);
 
-    // The in-guest actions only make sense once Android is actually up.
-    const origReady = !!(orig && orig.status === 'ready');
-    for (const id of ['openSiteBtn', 'installApkBtn', 'pickAppBtn']) $(id).disabled = !origReady;
-    $('appNote').textContent = orig && orig.pkg
-      ? `The game is ${orig.pkg} — clones made from here launch it on boot.`
-      : 'No app chosen yet. Open the site in Android and download the game, or install an APK from this PC.';
-
-    // Keep the instance dropdown in step with the instances that exist.
     const want = m.rows.map((r) => `${r.id}|${r.name}`).join(',');
     const sel = $('cloneFrom');
     if (sel.dataset.sig !== want) {
@@ -304,10 +264,7 @@
     }
   }
 
-  /* ---- groups ------------------------------------------------------------
-   * A group is a label on an instance. The bar filters the table, and the
-   * dashboard has the same filter.
-   * ---------------------------------------------------------------------- */
+  /* ---- groups ----------------------------------------------------------- */
   function renderGroupBar() {
     const counts = new Map();
     for (const r of rowsCache) {
@@ -319,8 +276,8 @@
     $('groupBar').innerHTML =
       chip('', 'All', rowsCache.length)
       + groupsCache.map((g) => chip(g, g, counts.get(g) || 0)).join('')
-      + '<button class="group-new" id="newGroupBtn" title="Make a new group">+ Create group</button>'
-      + (groupFilter ? `<button class="group-del" id="delGroupBtn" title="Delete the group ${esc(groupFilter)}. The instances in it are kept.">Delete "${esc(groupFilter)}"</button>` : '');
+      + '<button class="group-new" id="newGroupBtn">+ Create group</button>'
+      + (groupFilter ? `<button class="group-del" id="delGroupBtn">Delete "${esc(groupFilter)}"</button>` : '');
   }
 
   async function loadGroups() {
@@ -343,7 +300,7 @@
       return;
     }
     if (e.target.closest('#delGroupBtn')) {
-      if (!confirm(`Delete the group "${groupFilter}"?\n\nThe instances in it are kept, they just lose the label.`)) return;
+      if (!confirm(`Delete the group "${groupFilter}"?\n\nThe instances in it are kept.`)) return;
       await window.api.groupDelete(groupFilter).catch(() => {});
       groupFilter = '';
       await loadGroups();
@@ -351,7 +308,6 @@
     }
   });
 
-  // Moving one instance into a group, straight from its row.
   $('rows').addEventListener('change', async (e) => {
     const sel = e.target.closest('select.row-group');
     if (!sel) return;
@@ -360,13 +316,12 @@
     poll();
   });
 
-  /* ---- saved details ------------------------------------------------------ */
+  /* ---- saved details ---------------------------------------------------- */
   let credForId = null;
-
-  function setCredVisible(on) {
+  const setCredVisible = (on) => {
     $('credPass').type = on ? 'text' : 'password';
     $('credPin').type = on ? 'text' : 'password';
-  }
+  };
 
   async function openCred(id) {
     credForId = Number(id);
@@ -403,47 +358,7 @@
     setTimeout(() => $('credModal').classList.add('hidden'), 700);
   });
 
-  /* ---- the one app -------------------------------------------------------
-   * The original downloads the game the way a phone would, or takes an APK
-   * from this PC. Either way we end up knowing its package name, and that is
-   * what every clone inherits.
-   * ---------------------------------------------------------------------- */
-  $('openSiteBtn').addEventListener('click', async () => {
-    const r = await window.api.openSite(ORIGINAL_ID, $('cfgUrl').value.trim()).catch((e) => ({ ok: false, error: e.message }));
-    if (!r || !r.ok) { msgEl('cfgMsg', (r && r.error) || 'Could not open it.', 'err'); return; }
-    msgEl('cfgMsg', 'Opened in the browser inside the original. Watch it in the Dashboard: zoom in on #1 and you can tap and type in it.', 'ok');
-  });
-
-  $('installApkBtn').addEventListener('click', async () => {
-    msgEl('cfgMsg', 'Installing…', '');
-    const r = await window.api.installApk(ORIGINAL_ID, null).catch((e) => ({ ok: false, error: e.message }));
-    if (!r || !r.ok) { msgEl('cfgMsg', (r && r.error) || 'Install failed.', 'err'); return; }
-    msgEl('cfgMsg', r.pkg ? `Installed ${r.pkg}. That is now the game for every clone.` : 'Installed.', 'ok');
-    poll();
-  });
-
-  $('pickAppBtn').addEventListener('click', async () => {
-    const r = await window.api.listApps(ORIGINAL_ID).catch((e) => ({ ok: false, error: e.message }));
-    if (!r || !r.ok) { msgEl('cfgMsg', (r && r.error) || 'Could not read the app list.', 'err'); return; }
-    if (!r.apps.length) { msgEl('cfgMsg', 'Nothing is installed on the original yet.', 'err'); return; }
-    const orig = rowsCache.find((x) => x.original);
-    $('appPick').innerHTML = r.apps.map((p) => `<option value="${esc(p)}"${orig && orig.pkg === p ? ' selected' : ''}>${esc(p)}</option>`).join('');
-    msgEl('appMsg', '');
-    $('appModal').classList.remove('hidden');
-  });
-
-  $('appClose').addEventListener('click', () => $('appModal').classList.add('hidden'));
-  $('appSave').addEventListener('click', async () => {
-    const pkg = $('appPick').value;
-    const r = await window.api.setPkg(ORIGINAL_ID, pkg).catch((e) => ({ ok: false, error: e.message }));
-    if (!r || !r.ok) { msgEl('appMsg', (r && r.error) || 'Could not save.', 'err'); return; }
-    $('appModal').classList.add('hidden');
-    await window.api.launch(ORIGINAL_ID, pkg).catch(() => {});
-    msgEl('cfgMsg', `${pkg} is the game now, and it is starting on the original.`, 'ok');
-    poll();
-  });
-
-  /* ---- update settings -------------------------------------------------- */
+  /* ---- updates ---------------------------------------------------------- */
   async function loadUpdateCfg() {
     const r = await window.api.updateStatus().catch(() => null);
     if (!r || !r.ok || !r.cfg) return;
@@ -452,8 +367,6 @@
     $('updToken').value = r.cfg.token || '';
     $('updEnabled').checked = r.cfg.enabled !== false;
     const last = r.last;
-    // A checkout reports "disabled" with a reason; show the reason, because
-    // "up to date" would be a lie about why nothing was pulled.
     $('updStatus').textContent = !last ? 'Not checked yet.'
       : last.error ? last.error
         : last.ok
@@ -471,18 +384,17 @@
       token: $('updToken').value.trim(),
       enabled: $('updEnabled').checked,
     }).catch(() => {});
-    msgEl('updMsg', 'Checking GitHub…', '');
     const r = await window.api.checkUpdate().catch((e) => ({ ok: false, error: e.message }));
     btn.disabled = false;
     if (!r || !r.ok) { msgEl('updMsg', (r && r.error) || 'Check failed.', 'err'); return; }
     if (r.error) { msgEl('updMsg', r.error, 'err'); loadUpdateCfg(); return; }
     const n = (r.updated || []).length;
-    msgEl('updMsg', n ? `Pulled ${n} file${n === 1 ? '' : 's'} — restart to run them.` : 'Connected, and already up to date.', 'ok');
+    msgEl('updMsg', n ? `Pulled ${n} file${n === 1 ? '' : 's'} — restart to run them.` : 'Already up to date.', 'ok');
     showUpdate(r);
     loadUpdateCfg();
   });
 
-  /* ---- cloning ----------------------------------------------------------- */
+  /* ---- cloning ---------------------------------------------------------- */
   function renderClone(c) {
     if (!c) return;
     const wrap = $('cloneBarWrap');
@@ -490,7 +402,7 @@
       wrap.classList.remove('hidden');
       $('cloneBar').style.width = c.done + '%';
       $('cloneBtn').disabled = true;
-      msgEl('cloneMsg', `Copying onto #${c.newId} ${c.name}… ${gb(c.copiedMB)} of ${gb(c.totalMB)} (${c.done}%)`, '');
+      msgEl('cloneMsg', `Building #${c.newId} ${c.name}…`, '');
       cloneWasBusy = true;
       return;
     }
@@ -499,27 +411,21 @@
       wrap.classList.add('hidden');
       $('cloneBtn').disabled = false;
       if (c.error) msgEl('cloneMsg', c.error, 'err');
-      else msgEl('cloneMsg', `Done — ${gb(c.copiedMB)} copied. Start the clone and log it into its own account.`, 'ok');
+      else msgEl('cloneMsg', 'Done. Start the clone and log it into its own account.', 'ok');
       refreshDisk();
     }
   }
 
-  // The folder scan walks every file and asks the OS for allocated sizes, so
-  // it runs on demand rather than on the one-second poll.
   async function refreshDisk() {
     const d = await window.api.disk().catch(() => null);
     if (!d || !d.ok) return;
-    const biggest = d.rows.reduce((a, r) => (r.mb > a.mb ? r : a), { id: 0, mb: 0 });
-    $('stDiskFree').textContent = (d.freeMB / 1024).toFixed(1);
-    $('diskNote').textContent = d.totalMB
-      ? `${gb(d.totalMB)} on disk · biggest is #${biggest.id} at ${gb(biggest.mb)} · ${gb(d.freeMB)} free`
-      : `Nothing downloaded yet · ${gb(d.freeMB)} free`;
+    $('stDiskUsed').textContent = d.totalMB;
+    $('diskNote').textContent = `${gb(d.totalMB)} across ${d.rows.length} instance${d.rows.length === 1 ? '' : 's'} · ${gb(d.freeMB)} free · game data is shared, not copied`;
   }
 
   async function refreshRecSources() {
     const r = await window.api.recSources().catch(() => null);
     const next = new Set(((r && r.ok ? r.ids : []) || []).map(Number));
-    // Only force a redraw when it changed — this feeds the row signature.
     if (next.size !== recSources.size || [...next].some((id) => !recSources.has(id))) {
       recSources = next;
       lastSig = '';
@@ -538,16 +444,11 @@
   async function doClone(from, count) {
     const src = rowsCache.find((r) => r.id === Number(from));
     const label = src ? `#${src.id} ${src.name}` : `#${from}`;
-    const n = Math.max(1, Math.min(30, parseInt(count, 10) || 1));
-    const go = confirm(
-      `Create ${n} clone${n === 1 ? '' : 's'} of ${label}?\n\n`
-      + `${label} is shut down while it is copied — copying a running disk image gives you a torn one.`
-    );
-    if (!go) return;
+    const n = Math.max(1, Math.min(50, parseInt(count, 10) || 1));
+    if (!confirm(`Create ${n} clone${n === 1 ? '' : 's'} of ${label}?\n\n${label} is closed first, so its settings are written out before they are copied.`)) return;
     $('cloneBtn').disabled = true;
     cloneWasBusy = true;
     $('cloneBarWrap').classList.remove('hidden');
-    msgEl('cloneMsg', 'Shutting the source down…', '');
     const r = await window.api.clone(from, n).catch((e) => ({ ok: false, error: e.message }));
     if (r && !r.ok) {
       cloneWasBusy = false;
@@ -570,24 +471,18 @@
 
     if (['record', 'stopRecord', 'play', 'stopPlay'].includes(act)) {
       const cmd = act === 'stopPlay' ? 'stop' : act;
-      // With nothing recorded here, Play runs the original's recording.
       const rec = recState.get(id) || {};
       const opts = (cmd === 'play' && !rec.steps && recSources.has(ORIGINAL_ID) && id !== ORIGINAL_ID)
         ? { from: ORIGINAL_ID } : undefined;
       const res = await window.api.clickCmd(id, cmd, opts).catch((err) => ({ ok: false, error: err.message }));
       if (res && !res.ok) { msgEl('cfgMsg', res.error, 'err'); return; }
-      msgEl('cfgMsg', cmd === 'record'
-        ? `Recording on #${id}. Every tap it receives is captured — tap it in the Dashboard — until you press Stop rec.`
-        : cmd === 'stopRecord' ? `Recording stopped on #${id}.`
-          : cmd === 'play' ? (opts ? `Running the original's recording on #${id}.` : `Replaying on #${id}.`)
-            : `Playback stopped on #${id}.`, 'ok');
       refreshRecSources();
       return;
     }
 
     if (act === 'remove') {
       const row = rowsCache.find((r) => r.id === id);
-      if (!confirm(`Delete #${id} ${row ? row.name : ''} and its whole Android image?\n\nThis cannot be undone.`)) return;
+      if (!confirm(`Delete #${id} ${row ? row.name : ''}?\n\nOnly this instance's own folder goes. The game install is untouched.`)) return;
     }
     btn.disabled = true;
     const r = await window.api[act](id).catch((err) => ({ ok: false, error: err.message }));
@@ -618,12 +513,13 @@
   $('startOriginalBtn').addEventListener('click', async () => {
     const r = await window.api.start(ORIGINAL_ID).catch((e) => ({ ok: false, error: e.message }));
     if (r && !r.ok) { msgEl('cfgMsg', r.error, 'err'); return; }
-    msgEl('cfgMsg', 'Booting Android. A cold boot takes about a minute — the row says Ready when it is up.', 'ok');
+    msgEl('cfgMsg', 'Starting the client. If it closes itself straight away, the row will say so.', 'ok');
     poll();
+    setTimeout(poll, 7000);
   });
 
   $('resetOriginalBtn').addEventListener('click', async () => {
-    if (!confirm('Reset the original?\n\nIts Android image is deleted: the game, its downloads and its login all go. Clones already made are untouched.')) return;
+    if (!confirm('Reset the original?\n\nIts own folder is rebuilt from the install, so its settings and local files go. The game install itself is untouched.')) return;
     const r = await window.api.reset(ORIGINAL_ID).catch((e) => ({ ok: false, error: e.message }));
     if (r && !r.ok) msgEl('cfgMsg', r.error, 'err');
     poll();
@@ -635,26 +531,19 @@
     btn.disabled = true;
     const r = await window.api.startAll().catch(() => null);
     btn.disabled = false;
-    if (r && r.ok) {
-      msgEl('cfgMsg', r.opened
-        ? `Booting ${r.opened}. They are virtual machines, so give them a minute.`
-        : 'Everything is already running.', 'ok');
-    }
+    if (r && r.ok) msgEl('cfgMsg', r.opened ? `Started ${r.opened}.` : 'Everything is already running.', 'ok');
     poll();
-    setTimeout(poll, 2000);
+    setTimeout(poll, 7000);
   });
 
   $('stopAllBtn').addEventListener('click', async () => {
-    msgEl('cfgMsg', 'Shutting the guests down cleanly…', '');
     await window.api.stopAll().catch(() => {});
-    msgEl('cfgMsg', 'Stopped.', 'ok');
     poll();
   });
 
   $('stageBtn').addEventListener('click', async () => {
     const r = await window.api.openStage().catch((e) => ({ ok: false, error: e.message }));
-    if (r && !r.ok) { msgEl('cfgMsg', r.error, 'err'); return; }
-    msgEl('cfgMsg', 'Dashboard opened.', 'ok');
+    if (r && !r.ok) msgEl('cfgMsg', r.error, 'err');
   });
 
   $('applyBtn').addEventListener('click', async () => {
@@ -663,12 +552,9 @@
     msgEl('cfgMsg', r.note || 'Saved.', 'ok');
   });
 
-  /* ---- code updates ----------------------------------------------------- */
-  // The app pulls its own source from GitHub on launch. Anything that changed
-  // is already on disk by the time this banner appears; a restart is what
-  // actually loads it.
+  /* ---- code updates ---------------------------------------------------- */
   function showUpdate(r) {
-    if (!r || !r.ok) return;           // a failed check stays quiet
+    if (!r || !r.ok) return;
     if (!r.updated || !r.updated.length) return;
     const bar = $('updateBar');
     bar.classList.remove('hidden', 'err');
@@ -682,12 +568,8 @@
   if (window.api.onUpdateResult) window.api.onUpdateResult(showUpdate);
   $('updateDismiss').addEventListener('click', () => $('updateBar').classList.add('hidden'));
 
-  /* Restart now.
-   *
-   * This waits for an answer instead of firing and forgetting: a portable
-   * build cannot always relaunch itself, and clicking Restart and watching
-   * nothing happen is the worst possible outcome. If it cannot restart, say
-   * so, in the banner, where the button was. */
+  // Awaited, because a portable build cannot always relaunch itself and
+  // clicking Restart and seeing nothing happen is the worst outcome.
   $('updateRestart').addEventListener('click', async () => {
     const btn = $('updateRestart');
     btn.disabled = true;
@@ -700,7 +582,6 @@
       $('updateBar').classList.add('err');
       return;
     }
-    // On success the window is about to go away, so leave the button alone.
     $('updateText').textContent = r.note || 'Restarting…';
   });
 
@@ -722,7 +603,7 @@
     if (s && s.ok) { ORIGINAL_ID = s.originalId || 1; writeForm(s.settings); }
     const v = await window.api.version().catch(() => null);
     if (v && v.ok) $('footVersion').textContent = `v${v.version} · Electron ${String(v.electron).split('.')[0]}`;
-    await checkAndroid();
+    await checkGame();
     await loadGroups();
     await refreshRecSources();
     await poll();

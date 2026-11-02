@@ -11,44 +11,22 @@
     <div class="brand"><span class="logo-mark" aria-hidden="true"></span> DASHBOARD</div>
     <span class="stage-sum" id="stageSum">—</span>
     <div class="stage-actions">
-      <label class="cols-ctl" title="Size of every tile. Fixed means each one keeps this exact size and the grid wraps.">
-        Tile
-        <input type="number" id="tileW" min="180" max="1200" step="10" value="400" />
-        <span class="by">×</span>
-        <input type="number" id="tileH" min="140" max="1200" step="10" value="272" />
-      </label>
-      <label class="cols-ctl"><input type="checkbox" id="fixedSize" checked /> Fixed</label>
-
-      <label class="cols-ctl" title="Record once on the original, then run that same recording on every instance. 'Each its own' plays whatever each one recorded itself.">
+      <label class="cols-ctl" title="Record once on the original, then run that same recording everywhere. 'Each its own' plays whatever each instance recorded itself.">
         Play
         <select id="recFrom"><option value="">each its own</option></select>
       </label>
       <button id="playAllBtn" class="tiny" title="Start the recording on every running instance">▶ Play all</button>
       <button id="stopAllRecBtn" class="tiny" title="Stop playback everywhere">⊘ Stop all</button>
-
       <label class="cols-ctl" title="Show only the instances in this group">
         Group
         <select id="groupSel"><option value="">All</option></select>
       </label>
-      <button id="hideAllTiles" class="tiny" title="Stop capturing every view. They all keep running.">👁 Hide all</button>
-      <button id="showAllTiles" class="tiny">Show all</button>
-      <button id="startAllTiles" class="primary tiny" title="Boot every instance, one after another">▶ Start all</button>
+      <button id="startAllTiles" class="primary tiny" title="Start every instance, one after another">▶ Start all</button>
       <button id="stopAllTiles" class="danger tiny">Stop all</button>
     </div>
   </header>
 
-  <!-- Android's own buttons, for the one instance you are zoomed into. While
-       zoomed you can also just type: keys are sent straight to the guest. -->
-  <div class="zoom-bar" id="zoomBar" hidden>
-    <span class="zoom-hint">Click to tap · drag to swipe · type to enter text · Esc to exit</span>
-    <button data-key="KEYCODE_BACK" title="Back">◀ Back</button>
-    <button data-key="KEYCODE_HOME" title="Home">⬤ Home</button>
-    <button data-key="KEYCODE_APP_SWITCH" title="Recent apps">▣ Recents</button>
-    <button data-key="KEYCODE_ENTER" title="Enter">⏎ Enter</button>
-    <button data-key="KEYCODE_DEL" title="Backspace">⌫ Del</button>
-  </div>
-
-  <div class="stage-grid" id="grid"></div>
+  <div class="stage-grid cards" id="grid"></div>
 
   <script src="stage.js"></script>
 </body>

@@ -1,10 +1,11 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('api', {
-  // Is Android set up on this machine, and fetch it if not.
-  androidHealth: () => ipcRenderer.invoke('android:health'),
-  androidInstall: () => ipcRenderer.invoke('android:install'),
-  onAndroidLog: (cb) => ipcRenderer.on('android:log', (_e, line) => cb(line)),
+  // Where the game is installed, and whether that folder is usable.
+  health: () => ipcRenderer.invoke('game:health'),
+  setPath: (dir) => ipcRenderer.invoke('game:setPath', dir),
+  build: (id) => ipcRenderer.invoke('game:build', id),
+  openFolder: (id) => ipcRenderer.invoke('game:openFolder', id),
 
   getSettings: () => ipcRenderer.invoke('game:settings'),
   apply: (patch) => ipcRenderer.invoke('game:apply', patch),
@@ -20,14 +21,6 @@ contextBridge.exposeInMainWorld('api', {
   focus: (id) => ipcRenderer.invoke('game:focus', id),
   reload: (id) => ipcRenderer.invoke('game:reload', id),
   rename: (id, name) => ipcRenderer.invoke('game:rename', id, name),
-
-  // The one app: open the site in the guest's browser, install an APK from
-  // the PC, see what is installed, launch it.
-  openSite: (id, url) => ipcRenderer.invoke('app:openSite', id, url),
-  installApk: (id, apkPath) => ipcRenderer.invoke('app:installApk', id, apkPath),
-  listApps: (id) => ipcRenderer.invoke('app:listApps', id),
-  launch: (id, pkg) => ipcRenderer.invoke('app:launch', id, pkg),
-  setPkg: (id, pkg) => ipcRenderer.invoke('app:setPkg', id, pkg),
 
   // cmd: record | stopRecord | play | stop | clear | state | exportSteps | importSteps
   // opts.from lets an instance replay another instance's recording.

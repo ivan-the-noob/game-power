@@ -1,7 +1,7 @@
 {
   "name": "game-power",
-  "version": "0.4.0",
-  "description": "Many Android instances of one game on screen at once, tiled, with live RAM per instance. One original you set up by hand; every other instance is a byte-for-byte clone of it.",
+  "version": "0.5.0",
+  "description": "Many instances of one game on screen at once, each with its own login, built from a single shared install. Runs the game's own Windows client - no emulator, no browser.",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
