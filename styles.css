@@ -257,3 +257,7 @@ code { font-family: var(--mono); font-size: 12px; color: var(--accent); }
 /* A failure reason shown as plain text in the Instances header, not hidden in
    a tooltip. An instance that cannot boot has to say so where it is read. */
 .hint.err { color: var(--red); font-weight: 600; }
+
+/* A boot that is taking longer than it should — not an error yet, but worth
+   reading, so it is amber rather than red. */
+.hint.warn-text { color: var(--amber); font-weight: 600; }

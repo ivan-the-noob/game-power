@@ -952,6 +952,20 @@ function recorderCfg() {
  * process tree, because the guest's RAM lives in the qemu child rather than
  * in the launcher we spawned.
  * -------------------------------------------------------------------------- */
+/* The emulator's own last words, for an instance that is taking too long.
+ * Returns nothing while a boot is still within the normal range, so a healthy
+ * start stays quiet. */
+function bootChatter(inst) {
+  if (!inst || inst.status !== 'booting') return '';
+  const secs = Math.round((Date.now() - inst.startedAt) / 1000);
+  if (secs < 60) return '';
+  const tail = (inst.log && inst.log.tail) || '';
+  const line = (tail.match(/[^\n]*(PANIC|ERROR|WARNING|Failed|cannot|unable)[^\n]*/i) || [])[0]
+    || tail.split(/\r?\n/).filter((l) => l.trim()).pop()
+    || '';
+  return `Still booting after ${secs}s.` + (line ? ` The emulator says: ${line.trim().slice(0, 200)}` : ' It has said nothing at all, which usually means it is just slow.');
+}
+
 let lastSnap = null;
 let lastSnapAt = 0;
 
@@ -967,6 +981,14 @@ async function refreshSnapshot() {
 async function metrics() {
   const st = loadState();
   const snap = await refreshSnapshot();
+  /* Whether the numbers mean anything at all.
+   *
+   * The snapshot is a PowerShell query against the performance counters, and
+   * when it fails — they can be disabled or broken on a given machine — every
+   * instance reported 0 MB and 0% CPU. A running emulator cannot use 0 MB, so
+   * that reads as "something is badly wrong" when the truth is only "I could
+   * not measure". The UI shows a dash instead when this is false. */
+  const measured = !!snap;
 
   const rows = [];
   let instMB = 0;
@@ -991,7 +1013,14 @@ async function metrics() {
       pkg: row.pkg || '',
       alive,
       status: inst ? inst.status : 'stopped',
-      note: inst ? inst.note : '',
+      /* While a boot is dragging on, show what the emulator itself last said.
+       *
+       * "Booting…" with nothing else is the least useful thing this app can
+       * display: there is no way to tell a slow boot from a stuck one, and the
+       * emulator has usually been talking the whole time. After a minute —
+       * past the 42-66s a healthy cold boot measured here — its own words are
+       * worth more than the word "Booting". */
+      note: inst ? (inst.note || bootChatter(inst)) : '',
       serial: android.serialFor(row.id),
       ramMB,
       cpu,
@@ -1002,6 +1031,7 @@ async function metrics() {
   const running = rows.filter((r) => r.alive).length;
   return {
     ok: true,
+    measured,
     settings: st.settings,
     rows,
     running,

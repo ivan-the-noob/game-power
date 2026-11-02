@@ -215,10 +215,13 @@
     lastSig = sig;
 
     body.innerHTML = shown.map((r) => {
-      const ram = r.alive
+      // A dash, not a zero, when the reading itself failed: a running emulator
+      // cannot use 0 MB, and showing 0 made a measurement problem look like a
+      // broken instance.
+      const ram = (r.alive && m.measured)
         ? `<span class="num">${r.ramMB}</span> MB<div class="bar"><i class="${ramClass(r.ramMB)}" style="width:${Math.min(100, Math.round((r.ramMB / peak) * 100))}%"></i></div>`
-        : '<span class="num dim">—</span>';
-      const cpu = r.alive ? `<span class="num">${r.cpu.toFixed(1)}</span>%` : '<span class="num dim">—</span>';
+        : `<span class="num dim" title="${r.alive ? 'Could not read memory on this PC' : ''}">—</span>`;
+      const cpu = (r.alive && m.measured) ? `<span class="num">${r.cpu.toFixed(1)}</span>%` : '<span class="num dim">—</span>';
       const up = r.alive ? `<span class="num">${r.upMin}</span>m` : '<span class="dim">—</span>';
       const tag = r.original
         ? '<span class="tag orig">original</span>'
@@ -278,17 +281,27 @@
      * visible explanation anywhere — you had to know to hover. */
     const booting = m.rows.filter((r) => r.status === 'booting').length;
     const broken = m.rows.filter((r) => r.status === 'error' && r.note);
+    // A boot that has outstayed the normal range reports what the emulator
+    // itself last said, which is the only thing that distinguishes slow from
+    // stuck.
+    const slow = m.rows.filter((r) => r.status === 'booting' && r.note);
     const note = $('monitorNote');
     if (broken.length) {
       const first = broken[0];
       note.textContent = `#${first.id} ${first.name}: ${first.note}`
         + (broken.length > 1 ? `  (and ${broken.length - 1} more)` : '');
       note.className = 'hint err';
+    } else if (slow.length) {
+      note.textContent = `#${slow[0].id} ${slow[0].name}: ${slow[0].note}`;
+      note.className = 'hint warn-text';
     } else {
       note.textContent = booting
-        ? `${booting} booting · ${m.running} running · a cold boot takes about a minute`
+        ? `${booting} booting · a cold boot takes about a minute`
         : (m.running ? `${m.running} running` : 'Nothing running.');
       note.className = 'hint';
+    }
+    if (!m.measured && m.running) {
+      note.textContent += '  ·  Memory could not be read on this PC, so RAM and CPU show a dash.';
     }
     $('stopAllBtn').disabled = m.running === 0;
 
