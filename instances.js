@@ -839,7 +839,7 @@ async function remove(id) {
 async function removeClones(opts) {
   if (cloneState.busy) return { ok: false, error: 'A clone is running — wait for it to finish.' };
   const alsoReset = !!(opts && opts.alsoReset);
-  ensureDirs();
+  ensureAvdHome();
 
   await stopAllNow();
   await wait(900);
