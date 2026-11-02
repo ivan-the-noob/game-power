@@ -7,6 +7,20 @@
  * ======================================================================== */
 const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron');
 const path = require('path');
+
+/* One data folder, however the app was started.
+ *
+ * userData is appData plus app.getName(), and a packaged build reports its
+ * productName ("Game Power") while a source run reports the package name
+ * ("game-power"). Left alone that is two separate folders, so installing the
+ * .exe would present an empty instance list beside an original that already
+ * has the game on it — the instances, the logins and the recordings would all
+ * appear to have vanished.
+ *
+ * Must come before anything resolves a path, which is why it is above the
+ * requires that eventually ask for one. */
+app.setName('game-power');
+
 const instances = require('./instances');
 const recorder = require('./recorder');
 const updater = require('./updater');
