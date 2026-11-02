@@ -47,10 +47,20 @@
 .tile-btns button:hover { color: var(--fg); border-color: var(--accent); }
 
 .tile-body { flex: 1; position: relative; min-height: 0; background: #000; }
-/* Do NOT set display:block here. Electron gives <webview> display:flex so its
-   internal frame fills the element; overriding it leaves that frame at the
-   150px default height, which is what letterboxed the game with black. */
-.tile-body webview { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+
+/* The guest's screen, as a stream of PNG frames.
+ *
+ * object-fit: contain keeps the guest's own aspect ratio whatever shape the
+ * tile is. That matters for more than looks: a click is turned into a tap by
+ * measuring against THIS element's box, so a stretched image would send every
+ * tap to the wrong place. */
+.tile-screen {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: contain; display: block;
+  background: #000; user-select: none; -webkit-user-drag: none;
+  cursor: crosshair;
+}
+
 .tile-idle {
   position: absolute; inset: 0; display: flex; flex-direction: column;
   align-items: center; justify-content: center; gap: 10px;
@@ -59,7 +69,7 @@
 .tile-idle button { padding: 7px 16px; }
 .stage-empty { grid-column: 1 / -1; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 13px; padding: 40px; }
 
-/* A hidden tile keeps running; it just stops being painted. */
+/* A hidden tile keeps running; it just stops being captured. */
 .tile-veil {
   position: absolute; inset: 0; display: flex; flex-direction: column;
   align-items: center; justify-content: center; gap: 8px;
@@ -68,7 +78,25 @@
 .veil-eye { font-size: 22px; opacity: .55; }
 .tile.is-hidden { border-color: rgba(245,165,36,.45); }
 
-/* Dropped back to the login screen, or stopped painting. Said in words on
-   the tile's own stat line rather than ringed in red, which got noisy fast
-   with a wall of instances. */
+/* An instance that would not boot. Said in words on the tile's own stat line
+   rather than ringed in red, which got noisy fast with a wall of instances. */
 .tile.offline .tile-stat { color: var(--amber); }
+
+/* Recording is the one state worth marking on the tile itself: it is easy to
+   forget which instance is capturing your taps. */
+.tile.recording { border-color: rgba(255,90,90,.55); }
+
+/* ---- the zoom bar -------------------------------------------------------
+ * Android's own navigation, for the instance you are zoomed into. Headless
+ * guests have no system bar of their own to click.
+ * ----------------------------------------------------------------------- */
+.zoom-bar {
+  display: flex; align-items: center; gap: 8px; flex: none;
+  padding: 6px 14px; background: var(--panel2); border-bottom: 1px solid var(--border-soft);
+}
+.zoom-bar .zoom-hint { font-size: 11px; color: var(--faint); margin-right: auto; }
+.zoom-bar button {
+  padding: 4px 11px; font-size: 11px; border-radius: 7px;
+  background: transparent; border: 1px solid var(--border); color: var(--muted);
+}
+.zoom-bar button:hover { color: var(--fg); border-color: var(--accent); }

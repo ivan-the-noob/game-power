@@ -12,7 +12,6 @@
     <div class="top-actions">
       <button id="checkUpdateBtn" title="Pull the newest code from GitHub">Check for updates</button>
       <button id="stageBtn" title="Show every instance as a live tile inside one window">▦ Dashboard</button>
-      <button id="tileBtn" title="Lay every running window out in a grid">Tile grid</button>
       <button id="stopAllBtn" class="danger">Stop all</button>
       <button id="startAllBtn" class="primary">▶ Start all</button>
     </div>
@@ -41,7 +40,7 @@
   <div id="credModal" class="modal hidden">
     <div class="modal-box">
       <h2 id="credTitle">Details</h2>
-      <p class="hint">Whatever you need to get back into this account. Kept on this machine only, in plain text beside the instance it belongs to — the same folder already holds that account's live browser session, so treat the folder itself as the secret.</p>
+      <p class="hint">Whatever you need to get back into this account. Kept on this machine only, in plain text beside the instance it belongs to — the same folder already holds that account's logged-in Android image, so treat the folder itself as the secret.</p>
       <div class="grid2">
         <label>Username <input type="text" id="credUser" autocomplete="off" /></label>
         <label>Password <input type="password" id="credPass" autocomplete="off" /></label>
@@ -58,13 +57,41 @@
     </div>
   </div>
 
+  <!-- Which app is the game. Only ever asked once, on the original. -->
+  <div id="appModal" class="modal hidden">
+    <div class="modal-box" style="width: 480px;">
+      <h2>Which one is the game?</h2>
+      <p class="hint">These are the apps installed on this instance. Pick the game and every clone made from here will launch it on boot.</p>
+      <label class="wide">App <select id="appPick"></select></label>
+      <div class="modal-actions">
+        <span id="appMsg" class="msg"></span>
+        <button id="appClose">Cancel</button>
+        <button id="appSave" class="primary">Use this one</button>
+      </div>
+    </div>
+  </div>
+
   <main>
     <section class="stats">
       <div class="stat"><span class="stat-label">Running</span><span class="stat-value" id="stRunning">0</span><span class="stat-unit" id="stRunningSub">of 1 instance</span></div>
-      <div class="stat"><span class="stat-label">Instances</span><span class="stat-value" id="stInst">0</span><span class="stat-unit">MB</span></div>
-      <div class="stat"><span class="stat-label">Shared</span><span class="stat-value" id="stShared">0</span><span class="stat-unit">MB (GPU + network)</span></div>
-      <div class="stat total"><span class="stat-label">Total</span><span class="stat-value" id="stTotal">0</span><span class="stat-unit">MB</span></div>
+      <div class="stat total"><span class="stat-label">Guests</span><span class="stat-value" id="stInst">0</span><span class="stat-unit">MB in use</span></div>
       <div class="stat"><span class="stat-label">Each</span><span class="stat-value" id="stEach">0</span><span class="stat-unit">MB average</span></div>
+      <div class="stat"><span class="stat-label">RAM free</span><span class="stat-value" id="stRamFree">0</span><span class="stat-unit" id="stRamSub">GB of 0</span></div>
+      <div class="stat"><span class="stat-label">Disk free</span><span class="stat-value" id="stDiskFree">—</span><span class="stat-unit">GB</span></div>
+    </section>
+
+    <!-- Shown only while Android is not ready to run. -->
+    <section class="card setup hidden" id="setupCard">
+      <div class="card-head">
+        <h2>0 · Set up Android</h2>
+        <span class="hint" id="setupState">checking…</span>
+      </div>
+      <p class="hint">An instance is a real Android device, so the emulator and one system image have to be on this machine. This is a one-time download of roughly 4.5 GB, shared by every instance you ever make.</p>
+      <div class="row">
+        <button id="setupBtn" class="primary">⤓ Download and set up</button>
+        <span id="setupMsg" class="msg"></span>
+      </div>
+      <pre class="log hidden" id="setupLog"></pre>
     </section>
 
     <section class="card origin">
@@ -72,11 +99,15 @@
         <h2>1 · The original</h2>
         <span class="hint" id="originNote">—</span>
       </div>
-      <p class="hint">Set this one up by hand: start it, log in, and download the game's asset packs. Everything you do here is what the clones inherit, so get it right once.</p>
+      <p class="hint">Set this one up by hand, once. Start it, open the game's site inside it and download the app, install it, then log in. Everything you do here is what the clones inherit.</p>
       <div class="row">
         <button id="startOriginalBtn" class="primary">▶ Start the original</button>
-        <button id="resetOriginalBtn" class="danger" title="Wipe the original back to empty">Reset</button>
+        <button id="openSiteBtn" title="Open the game's address in the browser inside Android, so you can download the app">🌐 Open the site in Android</button>
+        <button id="installApkBtn" title="Install an APK you already downloaded on this PC">⤓ Install an APK from this PC</button>
+        <button id="pickAppBtn" title="Say which installed app is the game">🎮 Which app is the game</button>
+        <button id="resetOriginalBtn" class="danger" title="Wipe the original back to a fresh Android">Reset</button>
       </div>
+      <p class="hint" id="appNote">—</p>
     </section>
 
     <section class="card">
@@ -84,7 +115,7 @@
         <h2>2 · Clone it</h2>
         <span class="hint" id="diskNote">—</span>
       </div>
-      <p class="hint">Each clone is a new instance that starts with the original's downloaded data already in place, so the packs are fetched once instead of once per instance. The original closes while it is copied.</p>
+      <p class="hint">A clone is a byte copy of the original's whole Android data partition: the installed game, its downloaded assets and the account already logged into it. The original shuts down while it is copied — copying a running disk image gives you a torn one.</p>
       <div class="grid2">
         <label>How many clones to make now
           <input type="number" id="cloneCount" min="1" max="30" value="1" />
@@ -98,21 +129,52 @@
         <span id="cloneMsg" class="msg"></span>
       </div>
       <div class="bar clone-bar hidden" id="cloneBarWrap"><i id="cloneBar" style="width:0%"></i></div>
-      <p class="hint warn-note">A clone carries the original's login too, so log out and into the next account inside each copy. Each one is a full copy on disk: the same pack set across ten clones needs ten times the space.</p>
+      <p class="hint warn-note">A clone carries the original's login too, so log out and into the next account inside each copy. Each one is a full copy on disk.</p>
     </section>
 
     <section class="card">
       <h2>Settings</h2>
+      <h2 class="sub">What each instance costs</h2>
       <div class="grid2">
+        <label>Guest RAM
+          <span class="range-row"><input type="number" id="cfgRam" min="512" max="4096" step="128" /><span class="unit-lbl">MB — below 768 Android itself starts thrashing</span></span>
+        </label>
+        <label>Guest CPU cores
+          <span class="range-row"><input type="number" id="cfgCores" min="1" max="4" step="1" /><span class="unit-lbl">of 12 on this machine</span></span>
+        </label>
+        <label>Graphics
+          <select id="cfgGpu">
+            <option value="swiftshader_indirect">Software — no GPU at all, more CPU</option>
+            <option value="host">Hardware — uses the graphics card, much faster</option>
+          </select>
+        </label>
+        <label>Screen
+          <span class="range-row"><input type="number" id="cfgW" min="320" max="1920" step="16" /><span class="unit-lbl">×</span><input type="number" id="cfgH" min="240" max="1080" step="16" /><span class="unit-lbl">at</span><input type="number" id="cfgDpi" min="120" max="480" step="20" /><span class="unit-lbl">dpi</span></span>
+        </label>
+        <label>Data partition
+          <span class="range-row"><input type="number" id="cfgDisk" min="2048" max="16384" step="512" /><span class="unit-lbl">MB — the room the game has to download into</span></span>
+        </label>
         <label>Game address
           <input type="text" id="cfgUrl" placeholder="https://web.qqirose.com/" />
         </label>
-        <label>Frame rate cap
-          <span class="range-row"><input type="range" id="cfgFps" min="0" max="60" step="5" /><output id="cfgFpsOut"></output></span>
+        <label class="check"><input type="checkbox" id="cfgHeadless" /> Headless — no desktop window per instance. This is the single biggest saving; the dashboard shows them instead.</label>
+        <label class="check"><input type="checkbox" id="cfgTrim" /> One app only — switch off search, wallpapers, animations and the rest of Android that the game never calls</label>
+        <label class="check"><input type="checkbox" id="cfgKiosk" /> Keep the game in front, and start it again if it closes</label>
+      </div>
+      <p class="hint">RAM, cores, graphics and screen size apply the next time an instance starts — a running virtual machine cannot be re-sized.</p>
+
+      <h2 class="sub">The dashboard</h2>
+      <div class="grid2">
+        <label>Frames per second per tile
+          <span class="range-row"><input type="number" id="cfgTileFps" min="0.2" max="10" step="0.2" /><span class="unit-lbl">— a monitor, not a stream. Lower costs less.</span></span>
         </label>
-        <label>Render scale
-          <span class="range-row"><input type="range" id="cfgDpr" min="0" max="100" step="5" /><output id="cfgDprOut"></output></span>
+        <label>Frames per second when zoomed in
+          <span class="range-row"><input type="number" id="cfgZoomFps" min="1" max="15" step="1" /><span class="unit-lbl">— only the one you are looking at</span></span>
         </label>
+      </div>
+
+      <h2 class="sub">The click recorder</h2>
+      <div class="grid2">
         <label>Repeat the recording
           <span class="range-row"><input type="number" id="cfgLoops" min="0" max="99999" step="1" /><span class="unit-lbl">times (0 = until you stop it)</span></span>
         </label>
@@ -122,13 +184,10 @@
         <label>Playback speed
           <span class="range-row"><input type="number" id="cfgSpeed" min="0.1" max="10" step="0.1" /><span class="unit-lbl">× the pace you recorded at</span></span>
         </label>
-        <label>Or ignore that pace and click every
+        <label>Or ignore that pace and tap every
           <span class="range-row"><input type="number" id="cfgFixedGap" min="0" max="600" step="0.1" /><span class="unit-lbl">seconds (0 = keep my pace)</span></span>
         </label>
-        <label class="check"><input type="checkbox" id="cfgPhone" /> Phone mode — mobile browser identity and portrait windows, so the game serves its lighter layout</label>
-        <label class="check"><input type="checkbox" id="cfgMuted" /> Mute every instance</label>
       </div>
-      <p class="hint">Frame rate and render scale are the two settings an emulator calls Frame Rate and Resolution, applied to the game itself. Lower is cheaper and softer-looking. They take effect on instances started after you save.</p>
       <div class="row">
         <button id="applyBtn">Save settings</button>
         <span id="cfgMsg" class="msg"></span>
@@ -178,7 +237,7 @@
 
   <footer class="foot">
     <span id="footVersion"></span>
-    <span class="foot-note">Every instance keeps its own login and asset cache, and they all share one GPU and one network process — which is why the total sits far below what the same number of emulators would cost.</span>
+    <span class="foot-note">Each instance is a real Android device, so the game cannot tell it from a phone — and nothing evicts it the way a browser evicts an offscreen game. That costs about a gigabyte of real memory per instance, which is the trade.</span>
   </footer>
 
   <script src="renderer.js"></script>

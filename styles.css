@@ -220,3 +220,26 @@ input[type="password"], input[type="email"], input[type="search"], textarea {
 }
 textarea { resize: vertical; min-height: 64px; font-family: inherit; line-height: 1.5; }
 input::placeholder, textarea::placeholder { color: var(--faint); }
+
+/* ---- setting Android up -------------------------------------------------
+ * Shown only while the emulator or the system image is missing. Styled like
+ * the original's card because it is the step before it.
+ * ----------------------------------------------------------------------- */
+.card.setup { border-color: rgba(245,165,36,.5); box-shadow: inset 0 0 0 1px rgba(245,165,36,.1); }
+
+/* sdkmanager's own output while it downloads. A fixed height so a long
+   download cannot push the rest of the page around. */
+pre.log {
+  margin-top: 12px; max-height: 190px; overflow: auto;
+  padding: 10px 12px; border-radius: 10px;
+  background: var(--row); border: 1px solid var(--border-soft);
+  font-family: var(--mono); font-size: 11px; line-height: 1.6; color: var(--muted);
+  white-space: pre-wrap; word-break: break-all;
+}
+
+/* A guest that would not boot. */
+.pill.bad { background: rgba(255,90,110,.16); color: var(--red); }
+
+/* Play, when this instance has nothing of its own and is about to run the
+   original's recording. Worth marking: it is not obvious otherwise. */
+.acts button.borrowed { border-style: dashed; border-color: var(--accent2); color: var(--accent); }

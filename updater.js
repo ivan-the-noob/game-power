@@ -64,6 +64,26 @@ const NEVER = new Set(['package-lock.json', 'npm-install.log']);
 
 const state = { busy: false, lastResult: null };
 
+/* Never update source that lives in a git working tree.
+ *
+ * This writes GitHub's copy of a file straight over the local one. That is
+ * exactly right for an installed copy and exactly wrong for a checkout: it
+ * silently discards uncommitted work, which is as bad for whoever clones this
+ * repo to change something as it is for the machine it was written on.
+ *
+ * An installed build has no .git anywhere above it, so this costs nothing in
+ * the case the updater actually exists for. */
+function gitWorkingTree() {
+  let dir = __dirname;
+  for (let i = 0; i < 8; i += 1) {
+    if (fs.existsSync(path.join(dir, '.git'))) return dir;
+    const up = path.dirname(dir);
+    if (up === dir) break;
+    dir = up;
+  }
+  return null;
+}
+
 // git's blob hash, which is what GitHub reports per file.
 function blobSha(buf) {
   return crypto.createHash('sha1').update('blob ' + buf.length + '\0').update(buf).digest('hex');
@@ -114,6 +134,20 @@ async function check(apply) {
   if (state.busy) return { ok: false, error: 'A check is already running.' };
   const c = loadCfg();
   if (!c.enabled) return { ok: true, updated: [], upToDate: true, disabled: true };
+  // Writing over a checkout would throw away uncommitted work. Refuse, and say
+  // why, rather than appearing to be up to date.
+  const tree = gitWorkingTree();
+  if (tree && apply) {
+    state.lastResult = {
+      ok: true,
+      updated: [],
+      upToDate: true,
+      disabled: true,
+      error: `Not updating: this copy is a git checkout (${tree}), so pulling would overwrite local changes. Use git here instead.`,
+      at: Date.now(),
+    };
+    return state.lastResult;
+  }
   state.busy = true;
   try {
     const listing = await getJson(`https://api.github.com/repos/${c.repo}/contents/${c.dir}?ref=${c.branch}`);
@@ -166,9 +200,39 @@ async function check(apply) {
   }
 }
 
-function restart() {
-  app.relaunch();
-  app.exit(0);
+/* What to relaunch, and whether we even can.
+ *
+ * `app.relaunch()` with no arguments re-runs process.execPath. For an
+ * installed build that is right. For the PORTABLE build it is not: a portable
+ * exe unpacks itself into a temp folder and runs from there, and that folder
+ * is deleted as the app exits — so the relaunch pointed at something that was
+ * about to vanish, and Restart appeared to do nothing at all. The portable
+ * launcher puts the real file's path in the environment, which is the one
+ * worth re-running.
+ *
+ * Returning the plan instead of acting on it lets main.js shut the guests down
+ * first, and lets the window be told when a restart is impossible rather than
+ * watching nothing happen. */
+function prepareRestart() {
+  const portable = process.env.PORTABLE_EXECUTABLE_FILE;
+  if (portable) {
+    if (!fs.existsSync(portable)) {
+      return { ok: false, error: `Cannot restart automatically: ${portable} is no longer there. Close Game Power and open it again to run the new code.` };
+    }
+    // A portable build takes no arguments of its own.
+    return { ok: true, relaunch: { execPath: portable, args: [] } };
+  }
+  // Dev runs look like "electron.exe . --flags", so the app path has to be
+  // carried over or the relaunch starts Electron with nothing to run.
+  return { ok: true, relaunch: { args: process.argv.slice(1) } };
 }
 
-module.exports = { check, status, restart, loadCfg, saveCfg, DEFAULT_CFG };
+function restart() {
+  const r = prepareRestart();
+  if (!r.ok) return r;
+  app.relaunch(r.relaunch);
+  app.exit(0);
+  return { ok: true };
+}
+
+module.exports = { check, status, restart, prepareRestart, gitWorkingTree, loadCfg, saveCfg, DEFAULT_CFG };
