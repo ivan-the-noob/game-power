@@ -134,6 +134,29 @@ async function check(apply) {
   if (state.busy) return { ok: false, error: 'A check is already running.' };
   const c = loadCfg();
   if (!c.enabled) return { ok: true, updated: [], upToDate: true, disabled: true };
+  /* A portable build cannot be updated, and pretending otherwise loops.
+   *
+   * The portable .exe unpacks itself into a NEW temp folder on every launch
+   * and deletes it on exit, so files written next to it live only until the
+   * app closes. Updating it downloaded the changed files, reported "restart to
+   * run the new code", and the restart extracted a clean original copy over
+   * the top — so the same files were fetched again, forever, with the version
+   * never moving. Observed exactly that: "Updated 8 files", restart, still
+   * v4.0.0, "Updated 8 files".
+   *
+   * Refuse, and say which build to use instead. */
+  if (process.env.PORTABLE_EXECUTABLE_FILE && apply) {
+    state.lastResult = {
+      ok: true,
+      updated: [],
+      upToDate: true,
+      disabled: true,
+      error: 'This is the portable build, which unpacks itself again on every launch — an update cannot survive a restart. Install with "Game Power Setup" instead and updates will stick.',
+      at: Date.now(),
+    };
+    return state.lastResult;
+  }
+
   // Writing over a checkout would throw away uncommitted work. Refuse, and say
   // why, rather than appearing to be up to date.
   const tree = gitWorkingTree();
