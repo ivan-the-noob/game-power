@@ -100,20 +100,3 @@
   background: transparent; border: 1px solid var(--border); color: var(--muted);
 }
 .zoom-bar button:hover { color: var(--fg); border-color: var(--accent); }
-
-/* ---- instance cards -----------------------------------------------------
- * The dashboard shows what each instance is doing rather than what it looks
- * like: the game draws into its own desktop window, and matching those
- * windows to instances is not built yet. A card states the truth; an empty
- * black frame would not.
- * ----------------------------------------------------------------------- */
-.stage-grid.cards { grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); grid-auto-rows: min-content; }
-.card-tile { min-height: 0; }
-.card-tile .tile-head { cursor: default; }
-.card-tile .tile-head:hover { background: var(--panel2); }
-.card-body { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 10px; }
-.card-note { font-size: 12px; color: var(--muted); min-height: 32px; line-height: 1.5; }
-.card-btns { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
-.card-btns button { padding: 4px 10px; font-size: 11px; border-radius: 7px; }
-.card-btns .steps { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--faint); }
-.card-tile.recording { border-color: rgba(255,90,90,.55); }

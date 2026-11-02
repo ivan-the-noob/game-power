@@ -1,165 +1,143 @@
 /* ===========================================================================
  * Game Power — the instances themselves.
  *
- * Third engine, same model: ONE original you set up by hand, and every other
- * instance a copy of it. What changed is what an instance is made of.
+ * The model is unchanged from the browser version, because the model was
+ * never the problem: there is ONE original you set up by hand, and every
+ * other instance is made by CLONING it. A clone starts life with the game
+ * already installed and already logged in, because it is a byte copy of the
+ * original's Android data partition.
  *
- *   browser  a Chromium window per instance   ~250 MB, kept losing its WebGL
- *                                             context and dropping to login
- *   Android  a whole emulated phone           ~2.7 GB measured, and the game
- *                                             has no Android build at all
- *   now      the game's own Windows client     no emulator, no browser
+ * What changed is what an instance IS. It used to be a Chromium window on its
+ * own session; it is now a real Android guest. That costs far more memory per
+ * instance, and buys the thing the browser could not: the game cannot tell it
+ * apart from a phone, nothing evicts it the way Chromium evicts an offscreen
+ * WebGL context, and input is real kernel input rather than synthetic events
+ * an app is free to ignore.
  *
- * The install is 10.46 GB but only 14 MB of it is per-instance: the packed
- * data (8.96 GB) and the asset folders are shared through hard links and
- * junctions, and only the files the game WRITES are copied. Measured: an
- * instance is built in 37 ms and costs 14.0 MB.
- *
- * Each instance has its own Sevenhearts.ini, which is where the cost of
- * running one is actually decided — resolution, frame cap, glow, water and
- * sound are all in there.
+ * An instance runs ONE app and nothing else — see android.trim(). It is
+ * headless, so it costs no host display surface at all; the dashboard shows
+ * it by pulling frames over ADB.
  * ======================================================================== */
 const { app } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
-const winclient = require('./winclient');
-const winapi = require('./winapi');
+const android = require('./android');
 const procstat = require('./procstat');
 const recorder = require('./recorder');
 const diskinfo = require('./diskinfo');
 
+const GAME_URL = 'https://web.qqirose.com/';
 const ORIGINAL_ID = 1;
 
 const DEFAULTS = {
-  // Where the game is installed. Everything is built from this, and it is
-  // never written to.
-  gamePath: '',
-  exeName: '',            // detected from gamePath
+  // Where the original gets the game from: opened in the guest's own browser
+  // so you can download the APK exactly as you would on a phone.
+  url: GAME_URL,
+  pkg: '',             // the game's package name, once we know it
 
-  // Per-instance client settings, written into its own Sevenhearts.ini.
-  // These are the knobs that decide what one instance costs.
+  // The lowest-RAM/GPU knobs. These are the whole point of the rebuild, so
+  // they are settings rather than constants.
+  ram: 1024,           // MB of guest RAM. Below ~768 Android itself thrashes.
+  cores: 1,
+  gpu: 'swiftshader_indirect',  // software GL: no GPU at all. 'host' is faster but uses the card.
   width: 800,
-  height: 600,
-  fullscreen: false,
-  fpsLimit: 30,           // the install shipped 240
-  muteAll: true,          // no audio device, no mixing, no sound buffers
-  glowQuality: 0,
-  waterQuality: 0,
-  shadowQuality: 0,
-  antialias: 0,
-  runInBackground: true,  // an unfocused instance must keep playing
+  height: 480,
+  dpi: 160,
+  diskMB: 4096,
+  headless: true,      // no host window; the dashboard streams frames instead
+  trim: true,          // switch off everything in the guest that is not the game
+  kiosk: true,         // keep the game in front, relaunch it if it dies
 
-  // Dashboard
-  tileFps: 2,
-  zoomFps: 10,
+  // Dashboard streaming
+  tileFps: 1,          // frames/sec per tile — this is a monitor, not a stream
+  zoomFps: 5,          // frames/sec for the one tile you are looking at
 
-  // Click recorder playback (unchanged names, so the UI carries over)
-  recLoops: 0,
-  recLoopGapMin: 0,
-  recLoopGap: 1,
-  recSpeed: 1,
-  recFixedGap: 0,
+  // Click recorder playback (same names as before, so the UI carries over)
+  recLoops: 0,         // 0 = keep looping until stopped
+  recLoopGapMin: 0,    // minutes of pause between loops
+  recLoopGap: 1,       // plus these seconds
+  recSpeed: 1,         // multiplies the recorded gaps; 2 = twice as fast
+  recFixedGap: 0,      // >0 = ignore the recorded rhythm, use this gap throughout
 };
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// id -> { id, child, pid, startedAt, status, note, exe }
+// id -> { id, child, pid, serial, startedAt, status, bootedAt, note, screen }
 const live = new Map();
 let state = null;
 
 /* ---- stored state (userData/game.json) ----------------------------------- */
-const statePath = () => path.join(app.getPath('userData'), 'game.json');
-const clientsRoot = () => path.join(app.getPath('userData'), 'clients');
-const clientDir = (id) => path.join(clientsRoot(), String(Number(id)));
+function statePath() { return path.join(app.getPath('userData'), 'game.json'); }
 
-let ready = false;
-function ensureDirs() {
-  if (ready) return;
-  try { fs.mkdirSync(clientsRoot(), { recursive: true }); } catch (e) { /* ignore */ }
+// AVDs live in our own data folder, never in the user's ~/.android, so
+// removing an instance can never damage their own SDK setup.
+let avdHomeReady = false;
+function ensureAvdHome() {
+  if (avdHomeReady) return;
+  const dir = path.join(app.getPath('userData'), 'avd');
+  try { fs.mkdirSync(dir, { recursive: true }); } catch (e) { /* ignore */ }
+  android.setAvdHome(dir);
   recorder.configure({ dir: path.join(app.getPath('userData'), 'recordings') });
-  ready = true;
+  avdHomeReady = true;
 }
 
-/* Each previous engine left settings behind that mean nothing here, and an
- * instance list whose contents cannot be carried over: a browser session and
- * an Android disk image are both useless to a Windows client. The names,
- * groups and saved logins are hand-typed and worth keeping; everything else
- * is dropped, and the user is told once rather than left guessing. */
-const FOREIGN_KEYS = ['phoneMode', 'fps', 'dpr', 'muted', 'ram', 'cores', 'gpu', 'dpi', 'diskMB', 'headless', 'trim', 'kiosk', 'pkg', 'url'];
-let migrationNote = '';
+/* Coming from the browser version.
+ *
+ * Its instances were Chromium session folders. There is no converting one of
+ * those into an Android disk image, so those instances cannot carry their
+ * logins over — but the names, groups and saved credentials are hand-typed
+ * data worth keeping, and each row simply has no AVD yet, which start() treats
+ * exactly like a brand new instance.
+ *
+ * Saying so once is the honest thing; silently booting a blank Android where
+ * an account used to be is not. */
+const BROWSER_ONLY = ['phoneMode', 'fps', 'dpr', 'muted'];
+let migratedFrom = '';
 
 function loadState() {
   if (state) return state;
-  ensureDirs();
+  ensureAvdHome();
   let raw = {};
   try { raw = JSON.parse(fs.readFileSync(statePath(), 'utf8')) || {}; } catch (e) { raw = {}; }
 
-  const incoming = { ...(raw.settings || {}) };
-  const prior = raw.engine && raw.engine !== 'windows' ? raw.engine : (FOREIGN_KEYS.some((k) => k in incoming) ? 'a previous engine' : '');
-  for (const k of FOREIGN_KEYS) delete incoming[k];
+  const rawSettings = { ...(raw.settings || {}) };
+  const cameFromBrowser = raw.engine !== 'android'
+    && BROWSER_ONLY.some((k) => Object.prototype.hasOwnProperty.call(rawSettings, k));
+  // Drop settings that meant something only to a browser, so they cannot be
+  // written back and cannot confuse the settings form.
+  for (const k of BROWSER_ONLY) delete rawSettings[k];
 
   state = {
-    engine: 'windows',
-    settings: { ...DEFAULTS, ...incoming },
+    engine: 'android',
+    settings: { ...DEFAULTS, ...rawSettings },
     groups: Array.isArray(raw.groups) ? raw.groups.filter((g) => typeof g === 'string' && g.trim()) : [],
     list: Array.isArray(raw.list) ? raw.list.filter((i) => i && Number(i.id)) : [],
   };
 
-  if (prior) {
+  if (cameFromBrowser) {
     const n = state.list.length;
-    migrationNote = `Game Power now runs the game's own Windows client. The ${n} instance${n === 1 ? '' : 's'} from ${prior === 'android' ? 'the Android version' : 'the previous version'} cannot carry over — names, groups and saved details were kept, but each one needs building again. Point it at your game folder and start the original.`;
+    // The old rows' app and lineage mean nothing now; everything the user
+    // typed stays.
+    for (const row of state.list) { row.pkg = ''; }
+    migratedFrom = `Game Power now runs real Android instances, so the ${n} instance${n === 1 ? '' : 's'} from the browser version cannot carry ${n === 1 ? 'its' : 'their'} login over — a browser session is not a disk image. Names, groups and saved details were kept. Set the original up again, then clone it.`;
   }
 
   if (!state.list.some((i) => Number(i.id) === ORIGINAL_ID)) {
     state.list.unshift({ id: ORIGINAL_ID, name: 'Original', from: null, createdAt: Date.now() });
   }
   state.list.sort((a, b) => a.id - b.id);
-
-  // Remember where the game is, if we can find it without being told.
-  if (!state.settings.gamePath) {
-    const guess = guessGamePath();
-    if (guess) state.settings.gamePath = guess;
-  }
-  if (state.settings.gamePath && !state.settings.exeName) {
-    state.settings.exeName = winclient.findExe(state.settings.gamePath) || '';
-  }
-
   persist();
   return state;
 }
 
-// The usual places a downloaded client ends up, so the first run is not a
-// file-picker.
-function guessGamePath() {
-  const home = os.homedir();
-  const roots = [path.join(home, 'Downloads'), path.join(home, 'Desktop'), 'C:/Games', 'D:/Games'];
-  for (const root of roots) {
-    let entries = [];
-    try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch (e) { continue; }
-    for (const e of entries) {
-      if (!e.isDirectory()) continue;
-      const a = path.join(root, e.name);
-      if (winclient.findExe(a)) return a;
-      // Installers often nest one level: Downloads/Game-v1/Game-v1/
-      let inner = [];
-      try { inner = fs.readdirSync(a, { withFileTypes: true }); } catch (x) { continue; }
-      for (const i of inner) {
-        if (!i.isDirectory()) continue;
-        const b = path.join(a, i.name);
-        if (winclient.findExe(b)) return b;
-      }
-    }
-  }
-  return null;
-}
-
+// Read once by the UI; the stored engine marker means it never fires twice.
 function takeMigrationNote() {
-  const n = migrationNote;
-  migrationNote = '';
-  return n;
+  const note = migratedFrom;
+  migratedFrom = '';
+  return note;
 }
 
 function persist() {
@@ -168,20 +146,21 @@ function persist() {
 
 function saveSettings(patch) {
   const next = { ...loadState().settings, ...(patch || {}) };
-  next.gamePath = String(next.gamePath || '').trim();
-  next.exeName = String(next.exeName || '').trim() || (winclient.findExe(next.gamePath) || '');
-  next.width = clamp(parseInt(next.width, 10) || 800, 640, 3840);
-  next.height = clamp(parseInt(next.height, 10) || 600, 480, 2160);
-  next.fullscreen = !!next.fullscreen;
-  next.fpsLimit = clamp(parseInt(next.fpsLimit, 10) || 30, 10, 240);
-  next.muteAll = !!next.muteAll;
-  next.glowQuality = clamp(parseInt(next.glowQuality, 10) || 0, 0, 2);
-  next.waterQuality = clamp(parseInt(next.waterQuality, 10) || 0, 0, 2);
-  next.shadowQuality = clamp(parseInt(next.shadowQuality, 10) || 0, 0, 2);
-  next.antialias = clamp(parseInt(next.antialias, 10) || 0, 0, 1);
-  next.runInBackground = !!next.runInBackground;
-  next.tileFps = clamp(Number(next.tileFps) || 2, 0.2, 15);
-  next.zoomFps = clamp(Number(next.zoomFps) || 10, 1, 30);
+  next.url = String(next.url || GAME_URL).trim() || GAME_URL;
+  if (!/^https?:\/\//i.test(next.url)) next.url = 'https://' + next.url.replace(/^\/+/, '');
+  next.pkg = android.cleanPkg(next.pkg);
+  next.ram = clamp(parseInt(next.ram, 10) || 1024, 512, 4096);
+  next.cores = clamp(parseInt(next.cores, 10) || 1, 1, 4);
+  next.gpu = ['swiftshader_indirect', 'host', 'angle_indirect', 'off'].includes(next.gpu) ? next.gpu : 'swiftshader_indirect';
+  next.width = clamp(parseInt(next.width, 10) || 800, 320, 1920);
+  next.height = clamp(parseInt(next.height, 10) || 480, 240, 1080);
+  next.dpi = clamp(parseInt(next.dpi, 10) || 160, 120, 480);
+  next.diskMB = clamp(parseInt(next.diskMB, 10) || 4096, 2048, 16384);
+  next.headless = !!next.headless;
+  next.trim = !!next.trim;
+  next.kiosk = !!next.kiosk;
+  next.tileFps = clamp(Number(next.tileFps) || 1, 0.2, 10);
+  next.zoomFps = clamp(Number(next.zoomFps) || 5, 1, 15);
   next.recLoops = clamp(parseInt(next.recLoops, 10) || 0, 0, 100000);
   next.recLoopGapMin = clamp(Number(next.recLoopGapMin) || 0, 0, 600);
   next.recLoopGap = clamp(Number(next.recLoopGap) || 0, 0, 600);
@@ -192,11 +171,14 @@ function saveSettings(patch) {
   return next;
 }
 
-const getSettings = () => loadState().settings;
-const entry = (id) => loadState().list.find((i) => Number(i.id) === Number(id)) || null;
-const nextId = () => Math.max(0, ...loadState().list.map((i) => Number(i.id))) + 1;
+function getSettings() { return loadState().settings; }
+function entry(id) { return loadState().list.find((i) => Number(i.id) === Number(id)) || null; }
+function nextId() { return Math.max(0, ...loadState().list.map((i) => Number(i.id))) + 1; }
 
-/* ---- groups -------------------------------------------------------------- */
+/* ---- groups --------------------------------------------------------------
+ * A group is a label on an instance plus the list of labels you have made, so
+ * an empty group still exists to move things into.
+ * -------------------------------------------------------------------------- */
 function listGroups() {
   const st = loadState();
   const named = Array.isArray(st.groups) ? st.groups : [];
@@ -234,7 +216,12 @@ function setGroup(ids, name) {
   return { ok: true, groups: listGroups() };
 }
 
-/* ---- credentials -------------------------------------------------------- */
+/* ---- credentials ---------------------------------------------------------
+ * Whatever you need to get back into that account, kept beside the instance
+ * it belongs to. Plain text in this app's own data folder — that folder
+ * already holds a logged-in Android image, so treat the folder as the secret
+ * rather than these fields.
+ * -------------------------------------------------------------------------- */
 function getCred(id) {
   const row = entry(id);
   return { ok: true, cred: (row && row.cred) || { user: '', pass: '', pin: '', extra: '', note: '' } };
@@ -257,166 +244,91 @@ function setCred(id, cred) {
 
 const hasCred = (row) => !!(row.cred && (row.cred.user || row.cred.pass || row.cred.pin || row.cred.extra || row.cred.note));
 
-/* ---- readiness ---------------------------------------------------------- */
+/* ---- readiness ----------------------------------------------------------- */
 function health() {
-  ensureDirs();
-  const s = loadState().settings;
-  const info = winclient.inspect(s.gamePath);
-  return {
-    ok: info.ok,
-    gamePath: s.gamePath,
-    exe: info.exe || '',
-    error: info.error,
-    installMB: info.totalMB,
-    linkDirs: info.linkDirs,
-    bigFiles: info.bigFiles,
-    clientsRoot: clientsRoot(),
-    migrated: takeMigrationNote(),
-  };
+  ensureAvdHome();
+  loadState();   // so a first-run migration is noticed before the UI asks
+  return { ok: true, ...android.health(), avdHome: android.avdHome(), migrated: takeMigrationNote() };
 }
 
-function setGamePath(dir) {
-  const d = String(dir || '').trim();
-  const info = winclient.inspect(d);
-  if (!info.ok) return { ok: false, error: info.error };
-  saveSettings({ gamePath: d, exeName: info.exe });
-  return { ok: true, exe: info.exe, installMB: info.totalMB };
-}
+function installDeps(onLog) { ensureAvdHome(); return android.installDeps(onLog); }
 
-/* ---- the per-instance client settings ----------------------------------
- * Written into the instance's own Sevenhearts.ini before it starts. This is
- * the whole answer to "make it use less": the client is doing the rendering,
- * so the client's own quality settings are what cost memory and frames.
- * ----------------------------------------------------------------------- */
-function applyIni(id) {
-  const s = getSettings();
-  const ini = path.join(clientDir(id), 'Sevenhearts.ini');
-  if (!fs.existsSync(ini)) return false;
-  return winclient.patchIni(ini, {
-    RESOLUTION: { WIDTH: s.width, HEIGHT: s.height },
-    VIDEO: {
-      FULLSCREEN: s.fullscreen ? 1 : 0,
-      FPSLIMIT: s.fpsLimit,
-      ANTIALISING: s.antialias,
-      SHADOWQUALITY: s.shadowQuality,
-      GLOWQUALITY: s.glowQuality,
-      WATERQUALITY: s.waterQuality,
-      BLOOM: 0,
-      VSYNC: 0,
-      // An unfocused client must keep playing, or every instance but the one
-      // you are looking at would stall.
-      RUNINBACKGROUND: s.runInBackground ? 1 : 0,
-    },
-    SOUND: { MUTEALL: s.muteAll ? 1 : 0 },
-  });
-}
-
-/* ---- building and starting ---------------------------------------------- */
+/* ---- starting an instance ------------------------------------------------ */
 const isAlive = (id) => {
   const i = live.get(Number(id));
-  return !!(i && (i.status === 'starting' || i.status === 'running'));
+  return !!(i && i.status !== 'stopped' && i.status !== 'error');
 };
-const statusOf = (id) => { const i = live.get(Number(id)); return i ? i.status : 'stopped'; };
-const isBuilt = (id) => fs.existsSync(path.join(clientDir(id), getSettings().exeName || 'x'));
 
-function build(id, fromId) {
-  ensureDirs();
-  const s = getSettings();
-  const info = winclient.inspect(s.gamePath);
-  if (!info.ok) return { ok: false, error: info.error };
-
-  const dest = clientDir(id);
-  winclient.removeInstance(dest);
-  const rep = winclient.buildInstance(s.gamePath, dest);
-
-  // A clone takes the ORIGINAL's own writable files on top of the shared
-  // data, so it starts with the same settings and local state rather than the
-  // pristine install's.
-  if (fromId && Number(fromId) !== Number(id)) {
-    const src = clientDir(fromId);
-    if (fs.existsSync(src)) inheritWritable(src, dest);
-  }
-  applyIni(id);
-  return { ok: true, report: rep };
-}
-
-// Only what the source instance owns: its settings and the folders it writes.
-// Never the links — those already point at the same shared data.
-function inheritWritable(src, dest) {
-  for (const e of fs.readdirSync(src, { withFileTypes: true })) {
-    const from = path.join(src, e.name);
-    const to = path.join(dest, e.name);
-    let st = null;
-    try { st = fs.lstatSync(from); } catch (x) { continue; }
-    if (st.isSymbolicLink()) continue;            // shared asset folder
-    if (e.isDirectory()) {
-      if (!winclient.OWN_DIRS.includes(e.name)) continue;
-      try { fs.rmSync(to, { recursive: true, force: true }); } catch (x) { /* ignore */ }
-      copyPlain(from, to);
-      continue;
-    }
-    if (!/\.(ini|cfg|dat|sav)$/i.test(e.name)) continue;
-    try { fs.copyFileSync(from, to); } catch (x) { /* ignore */ }
-  }
-}
-
-function copyPlain(src, dest) {
-  fs.mkdirSync(dest, { recursive: true });
-  let entries = [];
-  try { entries = fs.readdirSync(src, { withFileTypes: true }); } catch (e) { return; }
-  for (const e of entries) {
-    const from = path.join(src, e.name);
-    const to = path.join(dest, e.name);
-    if (e.isDirectory()) { copyPlain(from, to); continue; }
-    if (!e.isFile()) continue;
-    try { fs.copyFileSync(from, to); } catch (x) { /* ignore */ }
-  }
+function statusOf(id) {
+  const i = live.get(Number(id));
+  return i ? i.status : 'stopped';
 }
 
 function start(id) {
   id = Number(id);
-  ensureDirs();
+  ensureAvdHome();
   const row = entry(id);
   if (!row) return { ok: false, error: `Instance #${id} does not exist.` };
   if (isAlive(id)) return { ok: true, already: true };
   if (cloneState.busy) return { ok: false, error: 'A clone is running — wait for it to finish.' };
 
+  const h = android.health();
+  if (!h.ok) return { ok: false, error: `Android is not set up yet (missing: ${h.missing.join(', ')}). Run "Set up Android" first.` };
+
   const s = getSettings();
-  const info = winclient.inspect(s.gamePath);
-  if (!info.ok) return { ok: false, error: info.error };
+  // The original creates its AVD on first start; a clone already has one, and
+  // only needs the resource knobs refreshed.
+  if (!android.avdExists(id)) android.writeAvd(id, s);
+  else android.tuneAvd(id, s);
 
-  if (!isBuilt(id)) {
-    const b = build(id, null);
-    if (!b.ok) return b;
-  } else {
-    applyIni(id);
-  }
-
-  const r = winclient.launch(clientDir(id), s.exeName || info.exe);
+  const r = android.startEmu(id, { ...s, window: !s.headless });
   if (!r.ok) return r;
 
-  const inst = { id, child: r.child, pid: r.pid, startedAt: Date.now(), status: 'starting', note: '', exe: r.exe };
+  const inst = {
+    id,
+    child: r.child,
+    pid: r.child.pid,
+    serial: r.serial,
+    startedAt: Date.now(),
+    status: 'booting',
+    bootedAt: 0,
+    note: '',
+    log: r.log,
+    screen: null,
+  };
   live.set(id, inst);
 
-  r.child.on('exit', (code) => {
+  r.child.on('exit', () => {
     const cur = live.get(id);
     if (!cur || cur.child !== r.child || cur.status === 'stopped') return;
-    const secs = Math.round((Date.now() - cur.startedAt) / 1000);
-    cur.status = 'error';
-    // The usual reason a client vanishes at once is that it will not run a
-    // second copy, or it wants its launcher. Say so rather than just "exited".
-    cur.note = secs < 10
-      ? `Closed itself after ${secs}s (exit ${code}). The client may refuse a second copy, or may need its launcher.`
-      : `Exited after ${secs}s (code ${code}).`;
+    // emulator.exe is a launcher: on Windows it can exit while the VM it
+    // started keeps running, so its exit alone does not mean we are down.
+    procstat.findByCmdline(android.avdName(id)).then((pid) => {
+      const still = live.get(id);
+      if (!still || still.child !== r.child || still.status === 'stopped') return;
+      if (pid) { still.pid = pid; return; }
+      still.status = 'error';
+      still.note = (r.log.tail.match(/(ERROR|PANIC)[^\n]*/) || ['The emulator exited.'])[0].slice(0, 200);
+    }).catch(() => {});
   });
 
-  // Nothing to wait for the way an emulator boots: it either keeps running or
-  // it does not. Give it a moment, then say which.
+  // Booting takes real time (30-120s cold). Do it off the call so the UI stays
+  // responsive, and report progress through the status field.
   (async () => {
-    await wait(6000);
+    const boot = await android.waitBoot(id, 240000);
     const cur = live.get(id);
-    if (!cur || cur.child !== r.child || cur.status !== 'starting') return;
-    cur.status = 'running';
+    if (!cur || cur.child !== r.child || cur.status === 'stopped') return;
+    if (!boot.ok) {
+      cur.status = 'error';
+      cur.note = boot.error;
+      return;
+    }
+    cur.status = 'ready';
+    cur.bootedAt = Date.now();
+    try { cur.screen = await android.screenSize(id); } catch (e) { cur.screen = null; }
+    if (s.trim) { try { await android.trim(id); } catch (e) { /* best effort */ } }
+    const pkg = row.pkg || s.pkg;
+    if (pkg) { try { await android.launchApp(id, pkg); } catch (e) { /* ignore */ } }
   })();
 
   return { ok: true };
@@ -437,14 +349,39 @@ async function stopNow(id) {
   id = Number(id);
   const inst = live.get(id);
   if (!inst) return { ok: true };
+
+  /* Flush the guest's filesystem BEFORE stopping the machine.
+   *
+   * `adb emu kill` stops the VM; it does not ask Android to shut down, so
+   * anything still in the guest's page cache goes with it. Measured: a file
+   * written and read back correctly was gone after a restart unless `sync`
+   * ran first — which is to say the login, the downloaded game, and
+   * everything a clone exists to inherit.
+   *
+   * `bootedAt` rather than the status field on purpose: stop() marks the
+   * instance stopped before calling this, so the status cannot be used to
+   * decide whether there is anything worth flushing. */
+  const everReady = inst.bootedAt > 0;
   inst.status = 'stopped';
-  const pid = inst.pid;
+  if (everReady) {
+    try {
+      if ((await android.bootState(id)) === 'booted') await android.flush(id);
+    } catch (e) { /* best effort — a guest that will not answer cannot be flushed */ }
+  }
+  try { await android.killEmu(id); } catch (e) { /* ignore */ }
+  for (let i = 0; i < 20; i += 1) {
+    if ((await android.bootState(id)) === 'offline') break;
+    await wait(500);
+  }
+  let pid = inst.pid;
+  if (!pid) pid = await procstat.findByCmdline(android.avdName(id)).catch(() => null);
   if (pid) { try { await procstat.killTree(pid); } catch (e) { /* ignore */ } }
-  procstat.forget(pid);
+  procstat.forget(inst.pid);
   live.delete(id);
   return { ok: true };
 }
 
+// The synchronous face of stopping, for callers that only need it started.
 function stop(id) {
   const inst = live.get(Number(id));
   if (inst) inst.status = 'stopped';
@@ -465,14 +402,19 @@ function stopAll() {
 
 function focus(id) {
   if (!isAlive(id)) return { ok: false, error: 'That instance is not running.' };
-  return { ok: true };
+  return { ok: true, note: 'Instances are headless — open the Dashboard to see them.' };
 }
 
+// "Reload" means put the game back in front from scratch, the equivalent of
+// reloading the page in the browser version.
 async function reload(id) {
   if (!isAlive(id)) return { ok: false, error: 'That instance is not running.' };
-  await stopNow(id);
-  await wait(1200);
-  return start(id);
+  const row = entry(id);
+  const pkg = (row && row.pkg) || getSettings().pkg;
+  if (!pkg) return { ok: false, error: 'No app is set for this instance yet.' };
+  await android.sh(id, `am force-stop ${android.cleanPkg(pkg)}`);
+  await android.launchApp(id, pkg);
+  return { ok: true };
 }
 
 function rename(id, name) {
@@ -483,11 +425,257 @@ function rename(id, name) {
   return { ok: true };
 }
 
-/* ---- cloning ------------------------------------------------------------
- * Nothing is copied but the instance's own settings, so this is instant:
- * measured at 37 ms per instance against a 10.46 GB install.
- * ----------------------------------------------------------------------- */
+/* ---- the one app ---------------------------------------------------------
+ * The original gets the game by downloading it the way a phone would. Once it
+ * is installed we remember its package name, and every clone inherits that
+ * along with the data partition.
+ * -------------------------------------------------------------------------- */
+async function openGameSite(id, url) {
+  if (statusOf(id) !== 'ready') return { ok: false, error: 'Start that instance and wait for it to be ready.' };
+  const r = await android.openUrl(id, String(url || getSettings().url));
+  return r.ok ? { ok: true } : { ok: false, error: r.err || 'Could not open the browser.' };
+}
+
+async function installApk(id, apkPath) {
+  if (statusOf(id) !== 'ready') return { ok: false, error: 'Start that instance and wait for it to be ready.' };
+  const before = new Set(await android.listApps(id));
+  const r = await android.installApk(id, apkPath);
+  if (!r.ok) return r;
+  // Whatever appeared is the game. That saves asking for a package name the
+  // user has no way of knowing.
+  const after = await android.listApps(id);
+  const fresh = after.filter((p) => !before.has(p));
+  const pkg = fresh[0] || '';
+  if (pkg) setPkg(id, pkg);
+  return { ok: true, pkg };
+}
+
+function setPkg(id, pkg) {
+  const row = entry(id);
+  if (!row) return { ok: false, error: 'No such instance.' };
+  row.pkg = android.cleanPkg(pkg);
+  // The original's app is *the* app, so it becomes the default for clones.
+  if (Number(id) === ORIGINAL_ID && row.pkg) saveSettings({ pkg: row.pkg });
+  persist();
+  return { ok: true, pkg: row.pkg };
+}
+
+async function listApps(id) {
+  if (statusOf(id) !== 'ready') return { ok: false, error: 'That instance is not ready yet.' };
+  return { ok: true, apps: await android.listApps(id) };
+}
+
+async function launchApp(id, pkg) {
+  if (statusOf(id) !== 'ready') return { ok: false, error: 'That instance is not ready yet.' };
+  const p = android.cleanPkg(pkg || (entry(id) || {}).pkg || getSettings().pkg);
+  if (!p) return { ok: false, error: 'No app set yet.' };
+  await android.launchApp(id, p);
+  return { ok: true };
+}
+
+/* ---- the kiosk watchdog --------------------------------------------------
+ * ONE timer for all instances, not one per instance: the browser version
+ * taught that per-instance timers are how a long-running app grows without
+ * anyone noticing.
+ * -------------------------------------------------------------------------- */
+let watchdog = null;
+let watchTick = 0;
+function startWatchdog() {
+  if (watchdog) return;
+  watchdog = setInterval(async () => {
+    const s = getSettings();
+    watchTick += 1;
+    // Flush every fourth tick — once a minute. A clean stop flushes anyway,
+    // but a crash, a power cut or Task Manager does not, and an hour of
+    // progress sitting unflushed in a guest's page cache is a real loss.
+    const alsoFlush = watchTick % 4 === 0;
+
+    for (const inst of [...live.values()]) {
+      if (inst.status !== 'ready') continue;
+      if (alsoFlush) {
+        try { await android.flush(inst.id); } catch (e) { /* ignore */ }
+      }
+      if (!s.kiosk) continue;
+      const row = entry(inst.id);
+      const pkg = (row && row.pkg) || s.pkg;
+      if (!pkg) continue;
+      try {
+        const front = await android.foregroundPkg(inst.id);
+        if (front && front !== pkg) await android.launchApp(inst.id, pkg);
+      } catch (e) { /* a busy guest is not an error */ }
+    }
+  }, 15000);
+  if (watchdog.unref) watchdog.unref();
+}
+
+function stopWatchdog() {
+  if (watchdog) { clearInterval(watchdog); watchdog = null; }
+}
+
+/* ---- screen + input ------------------------------------------------------ */
+async function frame(id) {
+  if (statusOf(id) !== 'ready') return null;
+  return android.frame(id);
+}
+
+async function screenOf(id) {
+  const inst = live.get(Number(id));
+  if (inst && inst.screen) return inst.screen;
+  const sz = await android.screenSize(id).catch(() => null);
+  if (inst && sz) inst.screen = sz;
+  return sz;
+}
+
+// The dashboard knows where you clicked inside a tile as a fraction of its
+// size; only here do we know what that is in device pixels.
+async function tapNorm(id, nx, ny) {
+  if (statusOf(id) !== 'ready') return { ok: false, error: 'That instance is not ready.' };
+  const sz = await screenOf(id);
+  if (!sz) return { ok: false, error: 'Could not read the screen size.' };
+  const x = clamp(Number(nx) || 0, 0, 1) * sz.w;
+  const y = clamp(Number(ny) || 0, 0, 1) * sz.h;
+  await android.tap(id, x, y);
+  // If this instance is recording, the tap it just received is a step. Noting
+  // it here rather than in the UI means a recording can only ever contain taps
+  // the guest actually got.
+  recorder.noteTap(id, x, y);
+  return { ok: true, x: Math.round(x), y: Math.round(y) };
+}
+
+async function swipeNorm(id, x1, y1, x2, y2, ms) {
+  if (statusOf(id) !== 'ready') return { ok: false, error: 'That instance is not ready.' };
+  const sz = await screenOf(id);
+  if (!sz) return { ok: false, error: 'Could not read the screen size.' };
+  await android.swipe(id, clamp(x1, 0, 1) * sz.w, clamp(y1, 0, 1) * sz.h, clamp(x2, 0, 1) * sz.w, clamp(y2, 0, 1) * sz.h, ms);
+  return { ok: true };
+}
+
+const key = (id, code) => android.key(id, code);
+const typeText = (id, text) => android.typeText(id, text);
+
+/* ---- cloning -------------------------------------------------------------
+ * A clone is a byte copy of the original's AVD folder, which is to say of its
+ * whole Android data partition: the installed game, its downloaded assets,
+ * and the account already logged into it. That is the entire reason the
+ * original exists.
+ *
+ * The source must be shut down first. Copying a running guest's disk image
+ * gives you a torn one, and a torn data partition is a lost account.
+ * -------------------------------------------------------------------------- */
 const cloneState = { busy: false, from: null, newId: null, copied: 0, total: 0, error: '', finishedAt: 0, lastName: '' };
+
+// What must NOT travel with a clone: locks held by the source, and the
+// generated configs carrying the source's own absolute paths. The emulator
+// rebuilds those from config.ini on first start. cache.img is dropped too —
+// it is rebuilt on boot, so copying it is gigabytes for nothing.
+const SKIP = new Set(['hardware-qemu.ini', 'emulator-user.ini', 'snapshots', 'cache.img', 'cache.img.qcow2']);
+const skipName = (n) => SKIP.has(n) || n.endsWith('.lock') || n.endsWith('.tmp');
+
+function dirSize(dir) {
+  let total = 0;
+  let entries = [];
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return 0; }
+  for (const e of entries) {
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) total += dirSize(p);
+    else if (e.isFile()) { try { total += fs.statSync(p).size; } catch (err) { /* ignore */ } }
+  }
+  return total;
+}
+
+function copyableSize(dir) {
+  let total = 0;
+  let entries = [];
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return 0; }
+  for (const e of entries) {
+    if (skipName(e.name)) continue;
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) total += copyableSize(p);
+    else if (e.isFile()) { try { total += fs.statSync(p).size; } catch (err) { /* ignore */ } }
+  }
+  return total;
+}
+
+/* Copy one AVD folder.
+ *
+ * Two things here were learned the hard way, by a clone that reported success
+ * and then would not boot:
+ *
+ *  - The copy must preserve holes. fs.copyFileSync writes real zeros, so the
+ *    6 GB data partition that occupies 2.4 GB needed 6 GB, ran the disk out
+ *    mid-copy, and left the clone without the one file that matters.
+ *
+ *  - A failed copy must NOT be shrugged off. The old code swallowed the error
+ *    "because a lock we cannot read is not worth failing the clone over",
+ *    which is exactly backwards: a clone missing its data partition is worth
+ *    failing over, loudly.
+ *
+ * Failures are collected rather than thrown so one unreadable leftover does
+ * not hide the state of everything else; clone() decides what is fatal. */
+async function copyDir(src, dest, onBytes, failures) {
+  fs.mkdirSync(dest, { recursive: true });
+  let entries = [];
+  try { entries = fs.readdirSync(src, { withFileTypes: true }); }
+  catch (e) { failures.push({ name: path.basename(src), error: String(e.message || e) }); return; }
+
+  for (const e of entries) {
+    if (skipName(e.name)) continue;
+    const from = path.join(src, e.name);
+    const to = path.join(dest, e.name);
+    if (e.isDirectory()) { await copyDir(from, to, onBytes, failures); continue; }
+    if (!e.isFile()) continue;
+
+    // The source has only just shut down, and Windows can hold a handle on a
+    // multi-gigabyte image a moment longer than the guest does.
+    let last = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await diskinfo.copySparse(from, to, onBytes);
+        last = null;
+        break;
+      } catch (err) {
+        last = err;
+        try { fs.rmSync(to, { force: true }); } catch (x) { /* ignore */ }
+        if (attempt < 2) await wait(1500 * (attempt + 1));
+      }
+    }
+    if (last) failures.push({ name: e.name, error: `${last.code || ''} ${last.message || last}`.trim() });
+  }
+}
+
+/* Is the copy actually complete?
+ *
+ * Every file that should have travelled must exist at the same length. This
+ * is the check that would have caught the missing data partition instead of
+ * letting a broken clone sit in the list looking fine. */
+function verifyCopy(src, dest) {
+  const missing = [];
+  let entries = [];
+  try { entries = fs.readdirSync(src, { withFileTypes: true }); } catch (e) { return ['(could not read the source)']; }
+  for (const e of entries) {
+    if (skipName(e.name)) continue;
+    const from = path.join(src, e.name);
+    const to = path.join(dest, e.name);
+    if (e.isDirectory()) { missing.push(...verifyCopy(from, to)); continue; }
+    if (!e.isFile()) continue;
+    let want = 0;
+    try { want = fs.statSync(from).size; } catch (err) { continue; }
+    let got = -1;
+    try { got = fs.statSync(to).size; } catch (err) { got = -1; }
+    if (got !== want) missing.push(`${e.name} (${got < 0 ? 'not copied' : `${got} of ${want} bytes`})`);
+  }
+  return missing;
+}
+
+const freeBytes = () => diskinfo.freeBytes(android.avdHome());
+
+// What a clone will REALLY take on disk. The data partition is sparse: a fresh
+// instance reports 8.6 GB by file length while occupying 2.5 GB, so the length
+// would refuse clones that fit perfectly well.
+async function allocatedOf(dir) {
+  const got = await diskinfo.allocatedDirs([dir]).catch(() => null);
+  return (got && got[dir]) || 0;
+}
 
 function cloneStatus() {
   return {
@@ -505,48 +693,95 @@ function cloneStatus() {
 
 async function clone(fromId, count) {
   if (cloneState.busy) return { ok: false, error: 'A clone is already running.' };
-  ensureDirs();
+  ensureAvdHome();
   const from = Number(fromId) || ORIGINAL_ID;
-  const howMany = clamp(parseInt(count, 10) || 1, 1, 50);
+  const howMany = clamp(parseInt(count, 10) || 1, 1, 30);
   const src = entry(from);
   if (!src) return { ok: false, error: `Instance #${from} does not exist.` };
-  if (!isBuilt(from)) return { ok: false, error: `Instance #${from} has not been built yet. Start it once first — that is what gets copied.` };
 
-  // The source must not be running: its settings file is written on exit, and
-  // copying it mid-write would give the clone a torn one.
+  const srcDir = android.avdDir(from);
+  if (!android.avdExists(from)) {
+    return { ok: false, error: `Instance #${from} has no Android image yet. Start it, download and install the game first — that is what gets copied.` };
+  }
+  if (!fs.existsSync(path.join(srcDir, 'userdata-qemu.img'))) {
+    return { ok: false, error: `Instance #${from} has never finished booting, so there is nothing to copy yet. Start it and wait for "ready".` };
+  }
+
+  // Two different sizes, on purpose. The space check needs what a clone will
+  // really occupy (sparse-aware); the progress bar needs the number of bytes
+  // the copy loop will actually push, which is the file lengths.
+  const mb = (n) => Math.round(n / (1024 * 1024));
+  const logicalOne = copyableSize(srcDir);
+  const realOne = (await allocatedOf(srcDir)) || logicalOne;
+  const need = realOne * howMany;
+  const free = freeBytes();
+  // Leave the machine half a gig: filling the system disk completely is worse
+  // than refusing the clone.
+  if (free && need > free - (512 * 1024 * 1024)) {
+    const fits = Math.max(0, Math.floor((free - (512 * 1024 * 1024)) / Math.max(1, realOne)));
+    return {
+      ok: false,
+      error: `Not enough disk space. ${howMany} clone${howMany === 1 ? '' : 's'} need about ${mb(need)} MB and only ${mb(free)} MB is free`
+        + (fits > 0 ? ` — you have room for ${fits} right now.` : '. Free some space first.'),
+    };
+  }
+
   await stopNow(from);
-  await wait(800);
+  await wait(2000);   // let the file handles go
 
   cloneState.busy = true;
   cloneState.from = from;
   cloneState.error = '';
   cloneState.copied = 0;
-  cloneState.total = howMany;
+  cloneState.newId = null;
   cloneState.finishedAt = 0;
+  cloneState.total = logicalOne * howMany;
 
   const made = [];
   try {
     for (let k = 0; k < howMany; k += 1) {
       const id = nextId();
+      if (id > android.maxInstances) throw new Error(`No console port left above instance #${android.maxInstances}.`);
       const name = `Clone ${id - 1}`;
       cloneState.newId = id;
       cloneState.lastName = name;
-      const b = build(id, from);
-      if (!b.ok) throw new Error(b.error);
+      const dest = android.avdDir(id);
+      try { fs.rmSync(dest, { recursive: true, force: true }); } catch (e) { /* ignore */ }
+
+      const failures = [];
+      await copyDir(srcDir, dest, (b) => { cloneState.copied += b; }, failures);
+
+      // Never leave a clone that looks fine and has no data partition. If
+      // anything is short or missing, throw the copy away rather than add it
+      // to the list — a broken clone is worse than no clone.
+      const missing = verifyCopy(srcDir, dest);
+      if (failures.length || missing.length) {
+        try { fs.rmSync(dest, { recursive: true, force: true }); } catch (e) { /* ignore */ }
+        try { fs.rmSync(android.avdIni(id), { force: true }); } catch (e) { /* ignore */ }
+        const why = failures.length
+          ? failures.map((f) => `${f.name}: ${f.error}`).join('; ')
+          : `incomplete: ${missing.join(', ')}`;
+        throw new Error(`The copy did not finish, so the clone was discarded — ${why}`);
+      }
+
+      // The copy still calls itself by the source's name and points at the
+      // source's folder. This is what makes it its own instance.
+      android.retargetAvd(id, getSettings());
       loadState().list.push({
         id,
         name,
         from,
         createdAt: Date.now(),
+        // Everything the original knew, the clone knows.
+        pkg: src.pkg || getSettings().pkg || '',
         group: src.group || '',
         cred: src.cred ? { ...src.cred } : undefined,
       });
       persist();
       made.push(id);
-      cloneState.copied = made.length;
     }
     cloneState.finishedAt = Date.now();
-    return { ok: true, created: made };
+    return { ok: true, created: made, mb: Math.round(cloneState.copied / (1024 * 1024)) };
   } catch (e) {
     cloneState.error = String(e.message || e);
     return { ok: false, error: cloneState.error, created: made };
@@ -556,53 +791,64 @@ async function clone(fromId, count) {
   }
 }
 
-/* ---- removing ----------------------------------------------------------- */
+/* ---- removing ------------------------------------------------------------ */
 async function remove(id) {
   id = Number(id);
   if (id === ORIGINAL_ID) return { ok: false, error: 'The original cannot be deleted — clone from it, or reset it instead.' };
   if (cloneState.busy) return { ok: false, error: 'A clone is running — wait for it to finish.' };
   await stopNow(id);
-  await wait(600);
-  // removeInstance unlinks the junctions first: deleting them recursively
-  // would reach through and take the shared install with it.
-  winclient.removeInstance(clientDir(id));
+  await wait(1200);
+  android.deleteAvd(id);
   const st = loadState();
   st.list = st.list.filter((i) => Number(i.id) !== id);
   persist();
   return { ok: true };
 }
 
+// Wipe one instance back to a fresh Android, keeping it in the list.
 async function reset(id) {
   id = Number(id);
   if (cloneState.busy) return { ok: false, error: 'A clone is running — wait for it to finish.' };
   await stopNow(id);
-  await wait(600);
-  winclient.removeInstance(clientDir(id));
-  return build(id, null);
+  await wait(1200);
+  android.deleteAvd(id);
+  android.writeAvd(id, getSettings());
+  const row = entry(id);
+  if (row) { row.pkg = ''; persist(); }
+  return { ok: true };
 }
 
 function applyLive(patch) {
   const s = saveSettings(patch);
-  // The client reads its settings at startup, so these land on next start.
-  for (const row of loadState().list) if (isBuilt(row.id)) applyIni(row.id);
-  return { ok: true, settings: s, note: 'Saved. Client settings apply the next time an instance starts.' };
+  // You cannot re-RAM a running VM, so resource changes land on next start.
+  for (const inst of live.values()) {
+    if (inst.status === 'ready') android.tuneAvd(inst.id, s);
+  }
+  return { ok: true, settings: s, note: 'Saved. RAM, cores, graphics and screen size apply the next time an instance starts.' };
 }
 
 function recorderCfg() {
   const s = getSettings();
   return {
     loops: Math.max(0, parseInt(s.recLoops, 10) || 0),
+    // Minutes and seconds add up, so "5 minutes" is one field away.
     loopGap: Math.max(0, (Number(s.recLoopGapMin) || 0) * 60 + (Number(s.recLoopGap) || 0)),
     speed: Math.max(0.1, Number(s.recSpeed) || 1),
     fixedGap: Math.max(0, Number(s.recFixedGap) || 0),
   };
 }
 
-/* ---- metrics ------------------------------------------------------------ */
+/* ---- metrics -------------------------------------------------------------
+ * One OS snapshot covers every instance. The cost of an instance is its whole
+ * process tree, because the guest's RAM lives in the qemu child rather than
+ * in the launcher we spawned.
+ * -------------------------------------------------------------------------- */
 let lastSnap = null;
 let lastSnapAt = 0;
 
 async function refreshSnapshot() {
+  // More often than this is pointless — a VM's working set does not move that
+  // fast, and each snapshot costs a process spawn.
   if (Date.now() - lastSnapAt < 1500) return lastSnap;
   lastSnap = await procstat.snapshot();
   lastSnapAt = Date.now();
@@ -617,7 +863,7 @@ async function metrics() {
   let instMB = 0;
   for (const row of st.list) {
     const inst = live.get(Number(row.id));
-    const alive = !!inst && (inst.status === 'starting' || inst.status === 'running');
+    const alive = !!inst && inst.status !== 'stopped';
     let ramMB = 0;
     let cpu = 0;
     if (alive && snap && inst.pid) {
@@ -633,10 +879,11 @@ async function metrics() {
       hasCred: hasCred(row),
       original: Number(row.id) === ORIGINAL_ID,
       from: row.from || null,
-      built: isBuilt(row.id),
+      pkg: row.pkg || '',
       alive,
       status: inst ? inst.status : 'stopped',
       note: inst ? inst.note : '',
+      serial: android.serialFor(row.id),
       ramMB,
       cpu,
       upMin: alive ? Math.max(0, Math.round((Date.now() - inst.startedAt) / 60000)) : 0,
@@ -655,10 +902,11 @@ async function metrics() {
     hostFreeMB: Math.round(os.freemem() / (1024 * 1024)),
     hostTotalMB: Math.round(os.totalmem() / (1024 * 1024)),
     clone: cloneStatus(),
-    ready: winclient.inspect(st.settings.gamePath).ok,
+    android: android.health().ok,
   };
 }
 
+// What the dashboard needs to build a tile per instance.
 function stageData() {
   return {
     ok: true,
@@ -669,119 +917,51 @@ function stageData() {
       name: row.name,
       group: row.group || '',
       original: Number(row.id) === ORIGINAL_ID,
+      pkg: row.pkg || '',
+      serial: android.serialFor(row.id),
     })),
   };
 }
 
+/* How much disk each instance is actually using.
+ *
+ * Reports the ALLOCATED size, not the file length: the data partition is
+ * sparse, so an instance that looks like 8.6 GB is really 2.5 GB. The scan
+ * walks every file, so it is called on demand rather than on the poll. */
 async function diskUsage() {
-  ensureDirs();
+  ensureAvdHome();
   const list = loadState().list;
-  const dirs = list.map((row) => clientDir(row.id));
+  const dirs = list.map((row) => android.avdDir(row.id));
   const alloc = await diskinfo.allocatedDirs(dirs).catch(() => ({}));
   const rows = list.map((row, i) => ({
     id: row.id,
     name: row.name,
-    mb: Math.round(((alloc[dirs[i]] || 0)) / (1024 * 1024)),
+    mb: Math.round(((alloc[dirs[i]] != null ? alloc[dirs[i]] : dirSize(dirs[i])) || 0) / (1024 * 1024)),
   }));
   return {
     ok: true,
     rows,
     totalMB: rows.reduce((a, r) => a + r.mb, 0),
-    freeMB: Math.round(diskinfo.freeBytes(clientsRoot()) / (1024 * 1024)),
-    note: 'Shared game data is linked, not copied, so these are the per-instance bytes only.',
+    freeMB: Math.round(freeBytes() / (1024 * 1024)),
   };
 }
 
+// Kept so the control panel's Tile button has something honest to say:
+// headless instances have no windows to arrange.
 function tile() {
-  return { ok: true, tiled: 0, note: 'The Dashboard is where the instances are shown.' };
+  return { ok: true, tiled: 0, note: 'Instances are headless — the Dashboard is where you see them.' };
 }
 
-/* ---- the game's window -------------------------------------------------
- * A client draws into an ordinary desktop window. Finding it is what lets
- * clicks be aimed and lets one instance be told from another.
- *
- * The window is renamed to carry the instance number, for two reasons: the
- * taskbar becomes readable when six are open, and every client otherwise
- * presents the identical title, which makes them impossible to tell apart
- * from the outside.
- * ----------------------------------------------------------------------- */
-async function windowOf(id) {
-  const inst = live.get(Number(id));
-  if (!inst || !inst.pid) return null;
-  if (inst.win && inst.win.hwnd) return inst.win;
-
-  const w = await winapi.findWindow(inst.pid).catch(() => null);
-  if (!w) return null;                 // still starting: no window drawn yet
-  inst.win = w;
-  const row = entry(id);
-  try { await winapi.setTitle(w.hwnd, `Game Power #${id} — ${(row && row.name) || ''}`); } catch (e) { /* cosmetic */ }
-  return w;
-}
-
-/* Click inside an instance, in client pixels.
- *
- * Which mechanism is used is a real choice with a real trade-off, documented
- * in winapi.js: a posted message does not steal focus but a game is free to
- * ignore it, while a system mouse event cannot be ignored but takes the
- * foreground. Posted first, because being able to drive instances in the
- * background is the entire point of a wall of them.
- */
-async function clickAt(id, x, y, opts) {
-  const w = await windowOf(id);
-  if (!w) return { ok: false, error: 'That instance has no window yet.' };
-  const real = !!(opts && opts.real);
-  const r = await winapi.click(w.hwnd, x, y, real);
-  if (!r.ok) return { ok: false, error: r.err || 'The click was not accepted.' };
-  recorder.noteTap(id, x, y);
-  return { ok: true, x: Math.round(x), y: Math.round(y), real };
-}
-
-// Click by fraction of the window, so the dashboard need not know its size.
-async function clickNorm(id, nx, ny, opts) {
-  const w = await windowOf(id);
-  if (!w) return { ok: false, error: 'That instance has no window yet.' };
-  return clickAt(id, clamp(Number(nx) || 0, 0, 1) * w.w, clamp(Number(ny) || 0, 0, 1) * w.h, opts);
-}
-
-async function typeInto(id, text) {
-  const w = await windowOf(id);
-  if (!w) return { ok: false, error: 'That instance has no window yet.' };
-  const r = await winapi.typeText(w.hwnd, text);
-  return r.ok ? { ok: true } : { ok: false, error: r.err || 'Could not type into it.' };
-}
-
-async function keyInto(id, name) {
-  const w = await windowOf(id);
-  if (!w) return { ok: false, error: 'That instance has no window yet.' };
-  const r = await winapi.key(w.hwnd, name);
-  return r.ok ? { ok: true } : { ok: false, error: r.err || 'Could not send that key.' };
-}
-
-async function focusWindow(id) {
-  const w = await windowOf(id);
-  if (!w) return { ok: false, error: 'That instance has no window yet.' };
-  await winapi.focusWindow(w.hwnd);
-  return { ok: true };
-}
-
-/* What the recorder clicks through. Supplied rather than imported so the
- * recorder stays ignorant of the engine behind it. */
-const injector = {
-  click: (id, x, y) => clickAt(id, x, y),
-  surface: async (id) => {
-    const w = await windowOf(id);
-    return w ? { w: w.w, h: w.h } : null;
-  },
-};
+startWatchdog();
 
 module.exports = {
-  DEFAULTS, ORIGINAL_ID,
+  GAME_URL, DEFAULTS, ORIGINAL_ID,
   getSettings, saveSettings, applyLive, stageData,
   listGroups, createGroup, deleteGroup, setGroup, getCred, setCred,
-  health, setGamePath, takeMigrationNote,
+  health, installDeps,
   start, startAll, stop, stopAll, stopNow, stopAllNow, focus, reload, rename, remove, reset,
-  build, clientDir, isBuilt, applyIni,
-  recorderCfg, statusOf, isAlive, entry,
-  windowOf, clickAt, clickNorm, typeInto, keyInto, focusWindow, injector,
-  clone, cloneStatus, tile, metrics, diskUsage,
+  openGameSite, installApk, listApps, launchApp, setPkg,
+  frame, screenOf, tapNorm, swipeNorm, key, typeText,
+  recorderCfg, statusOf, isAlive, entry, takeMigrationNote,
+  clone, cloneStatus, tile, metrics, diskUsage, stopWatchdog,
 };
