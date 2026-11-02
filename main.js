@@ -158,6 +158,7 @@ ipcMain.handle('game:remove', asyncOk((_e, id) => instances.remove(id)));
 ipcMain.handle('game:reset', asyncOk((_e, id) => instances.reset(id)));
 ipcMain.handle('game:removeClones', asyncOk((_e, opts) => instances.removeClones(opts)));
 ipcMain.handle('game:diag', asyncOk(() => instances.diagnostics()));
+ipcMain.handle('game:restartRunning', asyncOk(() => instances.restartRunning()));
 
 /* ---- the one app ---------------------------------------------------------- */
 ipcMain.handle('app:openSite', asyncOk((_e, id, url) => instances.openGameSite(id, url)));

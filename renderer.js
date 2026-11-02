@@ -787,10 +787,39 @@
     msgEl('cfgMsg', 'Dashboard opened.', 'ok');
   });
 
-  $('applyBtn').addEventListener('click', async () => {
+  async function saveSettings() {
     const r = await window.api.apply(readForm()).catch((e) => ({ ok: false, error: e.message }));
-    if (!r || !r.ok) { msgEl('cfgMsg', (r && r.error) || 'Could not save.', 'err'); return; }
-    msgEl('cfgMsg', r.note || 'Saved.', 'ok');
+    if (!r || !r.ok) { msgEl('cfgMsg', (r && r.error) || 'Could not save.', 'err'); return false; }
+    return true;
+  }
+
+  $('applyBtn').addEventListener('click', async () => {
+    if (!(await saveSettings())) return;
+    const anyRunning = rowsCache.some((r) => r.alive);
+    msgEl('cfgMsg', anyRunning
+      ? 'Saved — but nothing changes until an instance restarts. Use "Save and restart instances" to apply it now.'
+      : 'Saved. It applies the next time you start an instance.', 'ok');
+  });
+
+  /* Save, then actually apply it.
+   *
+   * A running virtual machine never re-reads its configuration, so changing
+   * RAM, cores or the screen and pressing Save looked like nothing happened —
+   * the row kept showing the old numbers and the game kept behaving the same.
+   * This is the missing step. */
+  $('applyRestartBtn').addEventListener('click', async () => {
+    const btn = $('applyRestartBtn');
+    if (!(await saveSettings())) return;
+    btn.disabled = true;
+    btn.textContent = 'Restarting…';
+    msgEl('cfgMsg', 'Stopping the running instances…', '');
+    const r = await window.api.restartRunning().catch((e) => ({ ok: false, error: e.message }));
+    btn.disabled = false;
+    btn.textContent = '↻ Save and restart instances';
+    if (!r || !r.ok) { msgEl('cfgMsg', (r && r.error) || 'Could not restart them.', 'err'); return; }
+    msgEl('cfgMsg', r.note || 'Restarted.', 'ok');
+    poll();
+    setTimeout(poll, 3000);
   });
 
   /* ---- code updates ----------------------------------------------------- */

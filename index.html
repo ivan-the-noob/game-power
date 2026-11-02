@@ -217,7 +217,11 @@
         </label>
       </div>
       <div class="row">
-        <button id="applyBtn">Save settings</button>
+        <button id="applyBtn" class="primary">Save settings</button>
+        <!-- A running virtual machine never re-reads its config, so saving
+             alone changes nothing until it is started again. This is that
+             step, rather than leaving someone to stop and start each one. -->
+        <button id="applyRestartBtn" title="Stop every running instance and start it again, so the settings above actually take hold">↻ Save and restart instances</button>
         <span id="cfgMsg" class="msg"></span>
       </div>
     </section>

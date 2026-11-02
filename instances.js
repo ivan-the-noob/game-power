@@ -989,6 +989,40 @@ async function reset(id) {
   return { ok: true };
 }
 
+/* Restart whatever is running, so new settings actually take hold.
+ *
+ * Changing RAM, cores or the screen writes the instance's config, and a VM
+ * that is already up never reads it again — so the settings changed, the row
+ * kept showing the old numbers, and there was no way to tell the app "apply
+ * them now" short of stopping and starting each instance by hand.
+ *
+ * Returns which ones were restarted, since an instance that was not running
+ * needs nothing doing and should not be started as a side effect of this. */
+async function restartRunning() {
+  const was = [...live.values()]
+    .filter((i) => i.status === 'ready' || i.status === 'booting')
+    .map((i) => i.id);
+  if (!was.length) return { ok: true, restarted: 0, note: 'Nothing was running, so there was nothing to restart. The new settings apply the next time you start an instance.' };
+
+  for (const id of was) await stopNow(id).catch(() => {});
+  await wait(1500);
+
+  const started = [];
+  for (const id of was) {
+    // One at a time: several cold boots at once fight over the same cores and
+    // all of them take longer than they would in turn.
+    const r = start(id);
+    if (r.ok) started.push(id);
+    await wait(1500);
+  }
+  return {
+    ok: true,
+    restarted: started.length,
+    ids: started,
+    note: `Restarted ${started.length} instance${started.length === 1 ? '' : 's'} with the new settings. Give ${started.length === 1 ? 'it' : 'them'} about a minute to boot.`,
+  };
+}
+
 function applyLive(patch) {
   const s = saveSettings(patch);
   // You cannot re-RAM a running VM, so resource changes land on next start.
@@ -1247,5 +1281,5 @@ module.exports = {
   openGameSite, installApk, listApps, launchApp, setPkg,
   frame, screenOf, tapNorm, swipeNorm, key, typeText,
   recorderCfg, statusOf, isAlive, entry, takeMigrationNote,
-  clone, cloneStatus, tile, metrics, diskUsage, stopWatchdog, removeClones, diagnostics,
+  clone, cloneStatus, tile, metrics, diskUsage, stopWatchdog, removeClones, diagnostics, restartRunning,
 };
